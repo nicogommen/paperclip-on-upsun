@@ -55,9 +55,15 @@ applications:
     # plain `node dist/index.js` start crash-loops on ERR_MODULE_NOT_FOUND
     # (.../packages/db/src/client.js). The tsx loader resolves those specifiers.
     # Loader path confirmed in the built container: /app/upstream/server/node_modules/tsx/dist/loader.mjs
+    #
+    # We do NOT pass the server as Node's static main entry: that resolves the import
+    # graph synchronously and deadlocks on tsx's async loader worker (frozen process,
+    # no port bound, defunct esbuild child — observed live on Node 24). Instead we boot
+    # via scripts/start.mjs, a plain-JS shim that dynamic-import()s the server, routing
+    # the whole graph through tsx's async hooks (verified to resolve correctly).
     web:
       commands:
-        start: "node --import ./upstream/server/node_modules/tsx/dist/loader.mjs upstream/server/dist/index.js"
+        start: "node --import ./upstream/server/node_modules/tsx/dist/loader.mjs scripts/start.mjs"
       locations:
         "/":
           passthru: true
