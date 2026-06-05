@@ -8,62 +8,69 @@
 
 applications:
   paperclip:
-    # Node 24 LTS — matches Paperclip's own Dockerfile (`FROM node:lts-trixie-slim`),
-    # which is the runtime their tsx-loader start command is validated against.
-    # We fell back from nodejs:26 deliberately: Node 26 resolves the static import
-    # graph synchronously, which BYPASSES tsx's async `module.register()` loader hooks
-    # (Node logs DEP0205 pointing at `module.registerHooks()`). The result was a boot
-    # crash-loop — `ERR_MODULE_NOT_FOUND: .../packages/db/src/client.js` — because the
-    # workspace packages export TS source (./src/*.ts) using .js import specifiers that
-    # only tsx can rewrite. On Node 24 the tsx loader applies to the static graph, so
-    # the .js->.ts specifiers resolve. (Confirmed on Node 26: dynamic import() worked
-    # via the async hooks, but the server's static imports did not.)
+    # The app IS the Paperclip submodule. `source.root` roots this app in upstream/
+    # (Upsun multi-app submodule pattern), so build/start use Paperclip's own native
+    # paths — no `upstream/` prefixes, no `-C`. The submodule is pinned to release
+    # v2026.529.0 and NEVER edited; our only build-time addition is the resolve hook
+    # generated below, written into the app tree (not committed into the submodule).
+    source:
+      root: upstream
+
+    # Node 24 LTS, matching Paperclip's own Dockerfile (`FROM node:lts-trixie-slim`).
     type: "nodejs:24"
 
-    # pnpm installed the Upsun-native way (works on any Node, with or without corepack).
+    # pnpm installed the Upsun-native way (works with or without corepack).
     # Pinned to Paperclip's declared packageManager (pnpm@9.15.4) to avoid version drift.
     dependencies:
       nodejs:
         pnpm: "9.15.4"
 
-    # No package.json at the repo root, so skip Upsun's default `npm install` flavor;
-    # the build hook drives everything from upstream/.
+    # Skip Upsun's default nodejs `npm install` flavor; we drive install with pnpm.
     build:
       flavor: none
 
-    # upstream/ is the Paperclip submodule, pinned to release v2026.529.0 — NEVER edited.
-    # The hook clones the pinned tag if the submodule was not fetched at build
-    # (PLAN open question #3 — the log line tells us which path ran).
     hooks:
       build: |
         set -eux
-        if [ ! -f upstream/package.json ]; then
-          echo "upstream/ missing — submodule not fetched; cloning pinned tag"
-          rm -rf upstream
-          git clone --depth 1 --branch v2026.529.0 https://github.com/paperclipai/paperclip.git upstream
-        else
-          echo "upstream/ present — submodule was fetched at build"
-        fi
-        pnpm -C upstream install --frozen-lockfile
-        pnpm -C upstream run build
-        # TODO(Phase 3): build + register our external adapter (scripts/), write adapter-plugins.json
+        pnpm install --frozen-lockfile
+        pnpm run build
+        # Runtime resolve hook (see start command for the full rationale). Paperclip's
+        # workspace packages export TS *source* (exports -> ./src/*.ts), but running TS
+        # at runtime needs tsx, and tsx's async loader deadlocks on Upsun's Node 24
+        # (sync static-graph resolution blocks on the loader worker). Since the build
+        # already compiles every package to dist/, this synchronous resolve hook
+        # (module.registerHooks — no worker, no deadlock) redirects any resolved
+        # workspace `.../src/*.ts` to its compiled `.../dist/*.js`, so the server runs
+        # as plain JS under plain node. Written into the app tree so it ships at runtime.
+        cat > .upsun-dist-resolve.mjs <<'HOOK'
+        import { registerHooks } from "node:module";
+        import { existsSync } from "node:fs";
+        import { fileURLToPath } from "node:url";
+        registerHooks({
+          resolve(specifier, context, nextResolve) {
+            const r = nextResolve(specifier, context);
+            try {
+              if (r?.url?.startsWith("file:") && r.url.includes("/src/") && r.url.endsWith(".ts")) {
+                const distUrl = r.url.replace("/src/", "/dist/").replace(/\.ts$/, ".js");
+                if (existsSync(fileURLToPath(distUrl))) return { ...r, url: distUrl, format: "module" };
+              }
+            } catch {}
+            return r;
+          },
+        });
+        HOOK
+        # TODO(Phase 3): build + register our external adapter, write adapter-plugins.json
 
-    # Start via the tsx loader, matching Paperclip's Dockerfile. Required because
-    # workspace packages (e.g. @paperclipai/db) export TS *source* (./src/*.ts), and
-    # their internal imports use the .js specifier convention. Node 26's native
-    # type-stripping runs .ts files but does NOT rewrite .js->.ts specifiers, so a
-    # plain `node dist/index.js` start crash-loops on ERR_MODULE_NOT_FOUND
-    # (.../packages/db/src/client.js). The tsx loader resolves those specifiers.
-    # Loader path confirmed in the built container: /app/upstream/server/node_modules/tsx/dist/loader.mjs
-    #
-    # We do NOT pass the server as Node's static main entry: that resolves the import
-    # graph synchronously and deadlocks on tsx's async loader worker (frozen process,
-    # no port bound, defunct esbuild child — observed live on Node 24). Instead we boot
-    # via scripts/start.mjs, a plain-JS shim that dynamic-import()s the server, routing
-    # the whole graph through tsx's async hooks (verified to resolve correctly).
+    # Run Paperclip's compiled server as plain JS. NOT via tsx: tsx's async
+    # module.register() loader deadlocks on Upsun's Node 24 — the server's static
+    # import graph is resolved synchronously and blocks on the loader worker (frozen
+    # process, no port bound, defunct esbuild child; reproduced with both
+    # `--import loader.mjs` and the tsx CLI). The build-generated resolve hook lets
+    # plain node load the compiled dist directly (verified live: server boots into
+    # app logic, no deadlock). Paths are relative to source.root (= upstream/).
     web:
       commands:
-        start: "node --import ./upstream/server/node_modules/tsx/dist/loader.mjs scripts/start.mjs"
+        start: "node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
       locations:
         "/":
           passthru: true
