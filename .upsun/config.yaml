@@ -68,15 +68,25 @@ applications:
     # `--import loader.mjs` and the tsx CLI). The build-generated resolve hook lets
     # plain node load the compiled dist directly (verified live: server boots into
     # app logic, no deadlock). Paths are relative to source.root (= upstream/).
+    #
+    # DATABASE_URL is built inline here from the postgresql relationship's
+    # individual env vars. Relationship vars are NOT available during the build
+    # hook (only at deploy/runtime), so the URL must be assembled at start, not
+    # baked at build. POSTGRESQL_PATH is the database name. The start command runs
+    # in a shell, so `VAR=... cmd` and `$VAR` expansion work.
     web:
       commands:
-        start: "node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
+        start: "DATABASE_URL=postgresql://$POSTGRESQL_USERNAME:$POSTGRESQL_PASSWORD@$POSTGRESQL_HOST:$POSTGRESQL_PORT/$POSTGRESQL_PATH node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
       locations:
         "/":
           passthru: true
 
     # Persistent state that must survive redeploys (instance config, uploads, run logs).
     # The secrets master key is NOT here — it comes from an env var (see variables.env).
+    # NOTE: mount keys are relative to the app root, so this mount lives at
+    # /app/paperclip-home at runtime (NOT the filesystem root /paperclip-home).
+    # PAPERCLIP_HOME below must point at that runtime path or the app's mkdir of
+    # instances/default/logs fails with ENOENT against the read-only root fs.
     mounts:
       "/paperclip-home":
         source: "storage"
@@ -90,7 +100,7 @@ applications:
         SERVE_UI: "true"
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
-        PAPERCLIP_HOME: "/paperclip-home"
+        PAPERCLIP_HOME: "/app/paperclip-home"
         # Bind all interfaces so Upsun's router can reach the container (default is loopback).
         HOST: "0.0.0.0"
         # Apply Drizzle migrations on boot, non-interactively.
