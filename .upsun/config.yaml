@@ -1,8 +1,8 @@
 # Upsun config for paperclip-on-upsun.
 #
-# STATUS: Phase 1 SKELETON — not complete, not yet deployed. This captures the
-# intended shape from PLAN.md §6 Phase 1-3. Values marked TODO are filled in and
-# validated during the corresponding phase. Do not deploy as-is.
+# STATUS: Phase 1, iterating via real deploys. The paperclip app build is being
+# brought up first (this iteration). Runtime concerns (start command, route URL,
+# secrets, resource sizing) and the upsun-agent task (Phase 2) are marked TODO.
 #
 # Companion docs: ../PLAN.md (plan), ../JOURNAL.md (progress), ../REFERENCE.md (facts).
 
@@ -11,19 +11,32 @@ applications:
     # Latest Upsun-supported Node.js. Fall back to nodejs:24 if a Paperclip dep rejects 26.
     type: "nodejs:26"
 
+    # Node 26 no longer bundles corepack, so install pnpm the Upsun-native way.
+    # Pinned to Paperclip's declared packageManager (pnpm@9.15.4) to avoid version drift.
+    dependencies:
+      nodejs:
+        pnpm: "9.15.4"
+
+    # No package.json at the repo root, so skip Upsun's default `npm install` flavor;
+    # the build hook drives everything from upstream/.
+    build:
+      flavor: none
+
     # upstream/ is the Paperclip submodule, pinned to release v2026.529.0 — NEVER edited.
-    # TODO(Phase 1): confirm Upsun fetches submodules at build; else clone the tag in the build hook.
+    # The hook clones the pinned tag if the submodule was not fetched at build
+    # (PLAN open question #3 — the log line tells us which path ran).
     hooks:
       build: |
         set -eux
-        # corepack-activate the exact pnpm Paperclip declares (packageManager field)
-        corepack enable
-        corepack prepare "$(node -p "require('./upstream/package.json').packageManager")" --activate
-        # build Paperclip from the submodule
+        if [ ! -f upstream/package.json ]; then
+          echo "upstream/ missing — submodule not fetched; cloning pinned tag"
+          rm -rf upstream
+          git clone --depth 1 --branch v2026.529.0 https://github.com/paperclipai/paperclip.git upstream
+        else
+          echo "upstream/ present — submodule was fetched at build"
+        fi
         pnpm -C upstream install --frozen-lockfile
-        pnpm -C upstream --filter @paperclipai/ui build
-        pnpm -C upstream --filter @paperclipai/plugin-sdk build
-        pnpm -C upstream --filter @paperclipai/server build
+        pnpm -C upstream run build
         # TODO(Phase 3): build + register our external adapter (scripts/), write adapter-plugins.json
 
     # TODO(Phase 1): confirm which start path loads our external adapter plugin:
