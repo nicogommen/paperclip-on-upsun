@@ -39,12 +39,16 @@ applications:
         pnpm -C upstream run build
         # TODO(Phase 3): build + register our external adapter (scripts/), write adapter-plugins.json
 
-    # TODO(Phase 1): confirm which start path loads our external adapter plugin:
-    #   plain   -> node upstream/server/dist/index.js
-    #   tsx     -> node --import upstream/server/node_modules/tsx/dist/loader.mjs upstream/server/dist/index.js
+    # Start via the tsx loader, matching Paperclip's Dockerfile. Required because
+    # workspace packages (e.g. @paperclipai/db) export TS *source* (./src/*.ts), and
+    # their internal imports use the .js specifier convention. Node 26's native
+    # type-stripping runs .ts files but does NOT rewrite .js->.ts specifiers, so a
+    # plain `node dist/index.js` start crash-loops on ERR_MODULE_NOT_FOUND
+    # (.../packages/db/src/client.js). The tsx loader resolves those specifiers.
+    # Loader path confirmed in the built container: /app/upstream/server/node_modules/tsx/dist/loader.mjs
     web:
       commands:
-        start: "node upstream/server/dist/index.js" # TODO(Phase 1): validate vs tsx loader
+        start: "node --import ./upstream/server/node_modules/tsx/dist/loader.mjs upstream/server/dist/index.js"
       locations:
         "/":
           passthru: true
