@@ -8,10 +8,19 @@
 
 applications:
   paperclip:
-    # Latest Upsun-supported Node.js. Fall back to nodejs:24 if a Paperclip dep rejects 26.
-    type: "nodejs:26"
+    # Node 24 LTS — matches Paperclip's own Dockerfile (`FROM node:lts-trixie-slim`),
+    # which is the runtime their tsx-loader start command is validated against.
+    # We fell back from nodejs:26 deliberately: Node 26 resolves the static import
+    # graph synchronously, which BYPASSES tsx's async `module.register()` loader hooks
+    # (Node logs DEP0205 pointing at `module.registerHooks()`). The result was a boot
+    # crash-loop — `ERR_MODULE_NOT_FOUND: .../packages/db/src/client.js` — because the
+    # workspace packages export TS source (./src/*.ts) using .js import specifiers that
+    # only tsx can rewrite. On Node 24 the tsx loader applies to the static graph, so
+    # the .js->.ts specifiers resolve. (Confirmed on Node 26: dynamic import() worked
+    # via the async hooks, but the server's static imports did not.)
+    type: "nodejs:24"
 
-    # Node 26 no longer bundles corepack, so install pnpm the Upsun-native way.
+    # pnpm installed the Upsun-native way (works on any Node, with or without corepack).
     # Pinned to Paperclip's declared packageManager (pnpm@9.15.4) to avoid version drift.
     dependencies:
       nodejs:
