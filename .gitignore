@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+*.key
+
+# Logs / scratch
+*.log
+.DS_Store
+tmp/

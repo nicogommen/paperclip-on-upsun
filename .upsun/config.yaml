@@ -1,0 +1,103 @@
+# Upsun config for paperclip-on-upsun.
+#
+# STATUS: Phase 1 SKELETON — not complete, not yet deployed. This captures the
+# intended shape from PLAN.md §6 Phase 1-3. Values marked TODO are filled in and
+# validated during the corresponding phase. Do not deploy as-is.
+#
+# Companion docs: ../PLAN.md (plan), ../JOURNAL.md (progress), ../REFERENCE.md (facts).
+
+applications:
+  paperclip:
+    # Latest Upsun-supported Node.js. Fall back to nodejs:24 if a Paperclip dep rejects 26.
+    type: "nodejs:26"
+
+    # upstream/ is the Paperclip submodule, pinned to release v2026.529.0 — NEVER edited.
+    # TODO(Phase 1): confirm Upsun fetches submodules at build; else clone the tag in the build hook.
+    hooks:
+      build: |
+        set -eux
+        # corepack-activate the exact pnpm Paperclip declares (packageManager field)
+        corepack enable
+        corepack prepare "$(node -p "require('./upstream/package.json').packageManager")" --activate
+        # build Paperclip from the submodule
+        pnpm -C upstream install --frozen-lockfile
+        pnpm -C upstream --filter @paperclipai/ui build
+        pnpm -C upstream --filter @paperclipai/plugin-sdk build
+        pnpm -C upstream --filter @paperclipai/server build
+        # TODO(Phase 3): build + register our external adapter (scripts/), write adapter-plugins.json
+
+    # TODO(Phase 1): confirm which start path loads our external adapter plugin:
+    #   plain   -> node upstream/server/dist/index.js
+    #   tsx     -> node --import upstream/server/node_modules/tsx/dist/loader.mjs upstream/server/dist/index.js
+    web:
+      commands:
+        start: "node upstream/server/dist/index.js" # TODO(Phase 1): validate vs tsx loader
+      locations:
+        "/":
+          passthru: true
+
+    # Persistent state that must survive redeploys (instance config, uploads, run logs).
+    # The secrets master key is NOT here — it comes from an env var (see variables.env).
+    mounts:
+      "/paperclip-home":
+        source: "storage"
+        source_path: "paperclip-home"
+
+    relationships:
+      postgresql: "postgresql:postgresql"
+
+    variables:
+      env:
+        SERVE_UI: "true"
+        PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+        PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+        PAPERCLIP_HOME: "/paperclip-home"
+        # Bind all interfaces so Upsun's router can reach the container (default is loopback).
+        HOST: "0.0.0.0"
+        # Apply Drizzle migrations on boot, non-interactively.
+        PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+        PAPERCLIP_MIGRATION_PROMPT: "never"
+        # PAPERCLIP_PUBLIC_URL: set to the env route. TODO(Phase 1): wire from PLATFORM_ROUTES or set per-env.
+      # Sensitive vars set out-of-band via `upsun variable:create --sensitive --prefix env:`:
+      #   PAPERCLIP_SECRETS_MASTER_KEY  (32-byte key; strict mode defaults on in authenticated mode)
+      #   BETTER_AUTH_SECRET
+      # NOTE: ANTHROPIC_API_KEY / OPENAI_API_KEY belong on the upsun-agent TASK, not here (PLAN §5.1).
+
+    # TODO(Phase 3): scope the auth-proxy tokens this app may mint (mirrors playground admin app).
+    # authorizations:
+    #   - type: task
+    #     resource: upsun-agent
+    #     action: operate
+    #   - type: env
+    #     action: view
+
+# TODO(Phase 2): the ephemeral task that runs one agent heartbeat. Modeled on the
+# playground's coding-agent. Tasks reject `dependencies`/`stack` (SPEC Q5), so the
+# agent CLI is installed in the build hook.
+# tasks:
+#   upsun-agent:
+#     source:
+#       root: /task
+#     type: "nodejs:26"
+#     hooks:
+#       build: |
+#         set -eux
+#         npm i -g @anthropic-ai/claude-code
+#     run:
+#       command: "node run.js"
+#       timeout: 900
+#     mounts:
+#       "/tmp":
+#         source: "tmp"
+
+services:
+  postgresql:
+    type: "postgresql:18"
+
+routes:
+  "https://{default}/":
+    type: upstream
+    upstream: "paperclip:http"
+  "https://www.{default}/":
+    type: redirect
+    to: "https://{default}/"
