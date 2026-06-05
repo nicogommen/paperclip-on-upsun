@@ -1,8 +1,11 @@
 # Upsun config for paperclip-on-upsun.
 #
-# STATUS: Phase 1, iterating via real deploys. The paperclip app build is being
-# brought up first (this iteration). Runtime concerns (start command, route URL,
-# secrets, resource sizing) and the upsun-agent task (Phase 2) are marked TODO.
+# STATUS: Phase 1, iterating via real deploys. Build is green; runtime boot clears the
+# DATABASE_URL, mount-path (PAPERCLIP_HOME), and BETTER_AUTH_SECRET gates. As of the last
+# pushed deploy (origin f97995e) boot stops at the auth gate ("authenticated public exposure
+# requires auth.baseUrlMode=explicit"); the local unpushed commit adds PAPERCLIP_PUBLIC_URL,
+# which fixes it. Resume by pushing that commit. Remaining: resource sizing (Phase 1), the
+# upsun-agent task (Phase 2), the external adapter (Phase 3). See ../JOURNAL.md handoff note.
 #
 # Companion docs: ../PLAN.md (plan), ../JOURNAL.md (progress), ../REFERENCE.md (facts).
 
@@ -106,7 +109,13 @@ applications:
         # Apply Drizzle migrations on boot, non-interactively.
         PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
         PAPERCLIP_MIGRATION_PROMPT: "never"
-        # PAPERCLIP_PUBLIC_URL: set to the env route. TODO(Phase 1): wire from PLATFORM_ROUTES or set per-env.
+        # PAPERCLIP_PUBLIC_URL feeds auth.publicBaseUrl and, because it is set, derives
+        # auth.baseUrlMode=explicit (config.ts: mode = ... ?? (publicBaseUrl ? "explicit" : "auto")).
+        # The authenticated+public exposure check requires explicit mode + a public base URL
+        # (index.ts: "authenticated public exposure requires auth.baseUrlMode=explicit"). Setting
+        # this one var satisfies both and adds the host to allowedHostnames. Hardcoded to the main
+        # env route for Phase 1. TODO: derive from PLATFORM_ROUTES (base64 JSON) for multi-env/PR branches.
+        PAPERCLIP_PUBLIC_URL: "https://main-bvxea6i-yc4kzuczwlbpg.eu-3.platformsh.site/"
       # Sensitive vars set out-of-band via `upsun variable:create --sensitive --prefix env:`:
       #   PAPERCLIP_SECRETS_MASTER_KEY  (32-byte key; strict mode defaults on in authenticated mode)
       #   BETTER_AUTH_SECRET
