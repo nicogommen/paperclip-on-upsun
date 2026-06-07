@@ -1,10 +1,10 @@
 # Upsun config for paperclip-on-upsun.
 #
-# STATUS: Phase 1, iterating via real deploys. Build is green; runtime boot clears the
-# DATABASE_URL, mount-path (PAPERCLIP_HOME), and BETTER_AUTH_SECRET gates. As of the last
-# pushed deploy (origin f97995e) boot stops at the auth gate ("authenticated public exposure
-# requires auth.baseUrlMode=explicit"); the local unpushed commit adds PAPERCLIP_PUBLIC_URL,
-# which fixes it. Resume by pushing that commit. Remaining: resource sizing (Phase 1), the
+# STATUS: Phase 1 boot is GREEN — the Paperclip server is live on Upsun, route returns 200,
+# all boot gates (DATABASE_URL, PAPERCLIP_HOME mount, BETTER_AUTH_SECRET, auth base-url) pass.
+# DATABASE_URL and PAPERCLIP_PUBLIC_URL are now assembled in a build-generated `.environment`
+# file (Upsun best practice) instead of inline in the start command / a hardcoded var.
+# Remaining: Phase 1c functional verification (first-admin claim + persistence), the
 # upsun-agent task (Phase 2), the external adapter (Phase 3). See ../JOURNAL.md handoff note.
 #
 # Companion docs: ../PLAN.md (plan), ../JOURNAL.md (progress), ../REFERENCE.md (facts).
@@ -62,6 +62,22 @@ applications:
           },
         });
         HOOK
+        # Upsun .environment file (sourced at deploy + runtime, NOT at build). Written into
+        # the app root, like the resolve hook above — never committed into the pinned submodule.
+        # Relationship/route vars do not exist during this build hook; they DO when .environment
+        # is sourced later, so the literal ${...} refs below expand at deploy/runtime.
+        # Pattern per https://developer.upsun.com/docs/add-services/postgresql#use-in-app
+        cat > .environment <<'ENV'
+        # DATABASE_URL from the postgresql relationship's individual service vars.
+        # Scheme is hardcoded to `postgresql`, NOT ${POSTGRESQL_SCHEME} (= `pgsql` on Upsun,
+        # which Paperclip's pg connection parser rejects).
+        export DATABASE_URL="postgresql://${POSTGRESQL_USERNAME}:${POSTGRESQL_PASSWORD}@${POSTGRESQL_HOST}:${POSTGRESQL_PORT}/${POSTGRESQL_PATH}"
+        # PAPERCLIP_PUBLIC_URL derived from the PRIMARY upstream route, so it is correct on
+        # every environment (main + PR/preview branches) instead of a hardcoded main-env URL.
+        # Setting it supplies auth.publicBaseUrl AND derives auth.baseUrlMode=explicit, which
+        # the authenticated+public exposure check requires.
+        export PAPERCLIP_PUBLIC_URL="$(echo "$PLATFORM_ROUTES" | base64 -d | jq -r 'to_entries | map(select(.value.primary == true and .value.type == "upstream")) | .[0].key')"
+        ENV
         # TODO(Phase 3): build + register our external adapter, write adapter-plugins.json
 
     # Run Paperclip's compiled server as plain JS. NOT via tsx: tsx's async
@@ -72,14 +88,11 @@ applications:
     # plain node load the compiled dist directly (verified live: server boots into
     # app logic, no deadlock). Paths are relative to source.root (= upstream/).
     #
-    # DATABASE_URL is built inline here from the postgresql relationship's
-    # individual env vars. Relationship vars are NOT available during the build
-    # hook (only at deploy/runtime), so the URL must be assembled at start, not
-    # baked at build. POSTGRESQL_PATH is the database name. The start command runs
-    # in a shell, so `VAR=... cmd` and `$VAR` expansion work.
+    # DATABASE_URL and PAPERCLIP_PUBLIC_URL are now exported from the build-generated
+    # `.environment` file (sourced before this command), so the start command is just node.
     web:
       commands:
-        start: "DATABASE_URL=postgresql://$POSTGRESQL_USERNAME:$POSTGRESQL_PASSWORD@$POSTGRESQL_HOST:$POSTGRESQL_PORT/$POSTGRESQL_PATH node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
+        start: "node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
       locations:
         "/":
           passthru: true
@@ -109,13 +122,10 @@ applications:
         # Apply Drizzle migrations on boot, non-interactively.
         PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
         PAPERCLIP_MIGRATION_PROMPT: "never"
-        # PAPERCLIP_PUBLIC_URL feeds auth.publicBaseUrl and, because it is set, derives
-        # auth.baseUrlMode=explicit (config.ts: mode = ... ?? (publicBaseUrl ? "explicit" : "auto")).
-        # The authenticated+public exposure check requires explicit mode + a public base URL
-        # (index.ts: "authenticated public exposure requires auth.baseUrlMode=explicit"). Setting
-        # this one var satisfies both and adds the host to allowedHostnames. Hardcoded to the main
-        # env route for Phase 1. TODO: derive from PLATFORM_ROUTES (base64 JSON) for multi-env/PR branches.
-        PAPERCLIP_PUBLIC_URL: "https://main-bvxea6i-yc4kzuczwlbpg.eu-3.platformsh.site/"
+        # PAPERCLIP_PUBLIC_URL is NOT set here — it is derived per-environment from the primary
+        # upstream route in the build-generated `.environment` file (see the build hook). It feeds
+        # auth.publicBaseUrl and derives auth.baseUrlMode=explicit, which authenticated+public
+        # exposure requires (index.ts: "authenticated public exposure requires auth.baseUrlMode=explicit").
       # Sensitive vars set out-of-band via `upsun variable:create --sensitive --prefix env:`:
       #   PAPERCLIP_SECRETS_MASTER_KEY  (32-byte key; strict mode defaults on in authenticated mode)
       #   BETTER_AUTH_SECRET
