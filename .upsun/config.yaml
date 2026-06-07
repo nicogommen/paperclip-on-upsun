@@ -1,50 +1,32 @@
 # Upsun config for paperclip-on-upsun.
-#
-# STATUS: Phase 1 boot is GREEN — the Paperclip server is live on Upsun, route returns 200,
-# all boot gates (DATABASE_URL, PAPERCLIP_HOME mount, BETTER_AUTH_SECRET, auth base-url) pass.
-# DATABASE_URL and PAPERCLIP_PUBLIC_URL are now assembled in a build-generated `.environment`
-# file (Upsun best practice) instead of inline in the start command / a hardcoded var.
-# Remaining: Phase 1c functional verification (first-admin claim + persistence), the
-# upsun-agent task (Phase 2), the external adapter (Phase 3). See ../JOURNAL.md handoff note.
-#
-# Companion docs: ../PLAN.md (plan), ../JOURNAL.md (progress), ../REFERENCE.md (facts).
+# Phase 1 boot is green (route 200). Full rationale + history: ../JOURNAL.md, ../REFERENCE.md.
 
 applications:
   paperclip:
-    # The app IS the Paperclip submodule. `source.root` roots this app in upstream/
-    # (Upsun multi-app submodule pattern), so build/start use Paperclip's own native
-    # paths — no `upstream/` prefixes, no `-C`. The submodule is pinned to release
-    # v2026.529.0 and NEVER edited; our only build-time addition is the resolve hook
-    # generated below, written into the app tree (not committed into the submodule).
+    # The app IS the pinned Paperclip submodule (v2026.529.0), rooted here so build/start use
+    # its native paths. NEVER edit upstream/; our additions are generated into the tree at build.
     source:
       root: upstream
 
-    # Node 24 LTS, matching Paperclip's own Dockerfile (`FROM node:lts-trixie-slim`).
+    # Node 24 LTS (Paperclip's own Dockerfile base). Node 26 breaks tsx's loader — see JOURNAL.
     type: "nodejs:24"
 
-    # pnpm installed the Upsun-native way (works with or without corepack).
-    # Pinned to Paperclip's declared packageManager (pnpm@9.15.4) to avoid version drift.
+    # pnpm pinned to Paperclip's declared packageManager, installed the Upsun-native way.
     dependencies:
       nodejs:
         pnpm: "9.15.4"
 
-    # Skip Upsun's default nodejs `npm install` flavor; we drive install with pnpm.
+    # No root package.json, so skip Upsun's default npm install; we drive it with pnpm.
     build:
       flavor: none
 
     hooks:
       build: |
-        set -eux
+        set -eu
         pnpm install --frozen-lockfile
         pnpm run build
-        # Runtime resolve hook (see start command for the full rationale). Paperclip's
-        # workspace packages export TS *source* (exports -> ./src/*.ts), but running TS
-        # at runtime needs tsx, and tsx's async loader deadlocks on Upsun's Node 24
-        # (sync static-graph resolution blocks on the loader worker). Since the build
-        # already compiles every package to dist/, this synchronous resolve hook
-        # (module.registerHooks — no worker, no deadlock) redirects any resolved
-        # workspace `.../src/*.ts` to its compiled `.../dist/*.js`, so the server runs
-        # as plain JS under plain node. Written into the app tree so it ships at runtime.
+        # Resolve hook: redirect workspace src/*.ts -> compiled dist/*.js so the server runs as
+        # plain node (no runtime tsx; its async loader deadlocks on Upsun Node 24). See JOURNAL.
         cat > .upsun-dist-resolve.mjs <<'HOOK'
         import { registerHooks } from "node:module";
         import { existsSync } from "node:fs";
@@ -62,34 +44,17 @@ applications:
           },
         });
         HOOK
-        # Upsun .environment file (sourced at deploy + runtime, NOT at build). Written into
-        # the app root, like the resolve hook above — never committed into the pinned submodule.
-        # Relationship/route vars do not exist during this build hook; they DO when .environment
-        # is sourced later, so the literal ${...} refs below expand at deploy/runtime.
-        # Pattern per https://developer.upsun.com/docs/add-services/postgresql#use-in-app
+        # .environment: generated here (app root is the un-editable submodule), sourced at runtime
+        # when relationship/route vars exist. DATABASE_URL scheme is hardcoded postgresql, NOT
+        # $POSTGRESQL_SCHEME (= pgsql, which Paperclip rejects). PUBLIC_URL derived per-env from
+        # the primary route. See JOURNAL for the why.
         cat > .environment <<'ENV'
-        # DATABASE_URL from the postgresql relationship's individual service vars.
-        # Scheme is hardcoded to `postgresql`, NOT ${POSTGRESQL_SCHEME} (= `pgsql` on Upsun,
-        # which Paperclip's pg connection parser rejects).
         export DATABASE_URL="postgresql://${POSTGRESQL_USERNAME}:${POSTGRESQL_PASSWORD}@${POSTGRESQL_HOST}:${POSTGRESQL_PORT}/${POSTGRESQL_PATH}"
-        # PAPERCLIP_PUBLIC_URL derived from the PRIMARY upstream route, so it is correct on
-        # every environment (main + PR/preview branches) instead of a hardcoded main-env URL.
-        # Setting it supplies auth.publicBaseUrl AND derives auth.baseUrlMode=explicit, which
-        # the authenticated+public exposure check requires.
         export PAPERCLIP_PUBLIC_URL="$(echo "$PLATFORM_ROUTES" | base64 -d | jq -r 'to_entries | map(select(.value.primary == true and .value.type == "upstream")) | .[0].key')"
         ENV
-        # TODO(Phase 3): build + register our external adapter, write adapter-plugins.json
 
-    # Run Paperclip's compiled server as plain JS. NOT via tsx: tsx's async
-    # module.register() loader deadlocks on Upsun's Node 24 — the server's static
-    # import graph is resolved synchronously and blocks on the loader worker (frozen
-    # process, no port bound, defunct esbuild child; reproduced with both
-    # `--import loader.mjs` and the tsx CLI). The build-generated resolve hook lets
-    # plain node load the compiled dist directly (verified live: server boots into
-    # app logic, no deadlock). Paths are relative to source.root (= upstream/).
-    #
-    # DATABASE_URL and PAPERCLIP_PUBLIC_URL are now exported from the build-generated
-    # `.environment` file (sourced before this command), so the start command is just node.
+    # Plain node on the compiled dist (no tsx — see resolve hook above). DATABASE_URL and
+    # PAPERCLIP_PUBLIC_URL come from the generated .environment, sourced before this runs.
     web:
       commands:
         start: "node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
@@ -97,12 +62,8 @@ applications:
         "/":
           passthru: true
 
-    # Persistent state that must survive redeploys (instance config, uploads, run logs).
-    # The secrets master key is NOT here — it comes from an env var (see variables.env).
-    # NOTE: mount keys are relative to the app root, so this mount lives at
-    # /app/paperclip-home at runtime (NOT the filesystem root /paperclip-home).
-    # PAPERCLIP_HOME below must point at that runtime path or the app's mkdir of
-    # instances/default/logs fails with ENOENT against the read-only root fs.
+    # Persistent state across redeploys. Mount keys are relative to the app root, so this lives
+    # at /app/paperclip-home at runtime — PAPERCLIP_HOME must match it or the app's mkdir ENOENTs.
     mounts:
       "/paperclip-home":
         source: "storage"
@@ -117,46 +78,13 @@ applications:
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
         PAPERCLIP_HOME: "/app/paperclip-home"
-        # Bind all interfaces so Upsun's router can reach the container (default is loopback).
-        HOST: "0.0.0.0"
-        # Apply Drizzle migrations on boot, non-interactively.
+        HOST: "0.0.0.0"  # bind all interfaces; Upsun's router reaches the container over the network
         PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
         PAPERCLIP_MIGRATION_PROMPT: "never"
-        # PAPERCLIP_PUBLIC_URL is NOT set here — it is derived per-environment from the primary
-        # upstream route in the build-generated `.environment` file (see the build hook). It feeds
-        # auth.publicBaseUrl and derives auth.baseUrlMode=explicit, which authenticated+public
-        # exposure requires (index.ts: "authenticated public exposure requires auth.baseUrlMode=explicit").
-      # Sensitive vars set out-of-band via `upsun variable:create --sensitive --prefix env:`:
-      #   PAPERCLIP_SECRETS_MASTER_KEY  (32-byte key; strict mode defaults on in authenticated mode)
-      #   BETTER_AUTH_SECRET
-      # NOTE: ANTHROPIC_API_KEY / OPENAI_API_KEY belong on the upsun-agent TASK, not here (PLAN §5.1).
-
-    # TODO(Phase 3): scope the auth-proxy tokens this app may mint (mirrors playground admin app).
-    # authorizations:
-    #   - type: task
-    #     resource: upsun-agent
-    #     action: operate
-    #   - type: env
-    #     action: view
-
-# TODO(Phase 2): the ephemeral task that runs one agent heartbeat. Modeled on the
-# playground's coding-agent. Tasks reject `dependencies`/`stack` (SPEC Q5), so the
-# agent CLI is installed in the build hook.
-# tasks:
-#   upsun-agent:
-#     source:
-#       root: /task
-#     type: "nodejs:26"
-#     hooks:
-#       build: |
-#         set -eux
-#         npm i -g @anthropic-ai/claude-code
-#     run:
-#       command: "node run.js"
-#       timeout: 900
-#     mounts:
-#       "/tmp":
-#         source: "tmp"
+        # PAPERCLIP_PUBLIC_URL is derived per-env in .environment (see build hook), not set here.
+      # Sensitive vars set out-of-band (upsun variable:create --sensitive --prefix env:):
+      #   BETTER_AUTH_SECRET, PAPERCLIP_SECRETS_MASTER_KEY.
+      # Agent API keys (ANTHROPIC/OPENAI) belong on the Phase 2 task, not here (PLAN §5.1).
 
 services:
   postgresql:
