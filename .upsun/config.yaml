@@ -86,6 +86,26 @@ applications:
       #   BETTER_AUTH_SECRET, PAPERCLIP_SECRETS_MASTER_KEY.
       # Agent API keys (ANTHROPIC/OPENAI) belong on the Phase 2 task, not here (PLAN §5.1).
 
+# Phase 2: the ephemeral task that runs one agent heartbeat (modeled on the playground's
+# coding-agent). Fire-and-forget, run-to-completion. Triggered via the Upsun API; in Phase 3
+# the upsun_task adapter triggers it on each Paperclip heartbeat. Tasks reject
+# `dependencies`/`stack` (SPEC Q5), so the agent CLI is installed in the build hook.
+tasks:
+  upsun-agent:
+    source:
+      root: /task
+    type: "nodejs:26"
+    hooks:
+      build: |
+        set -eu
+        npm i -g @anthropic-ai/claude-code
+    run:
+      command: "node run.js"
+      timeout: 900  # common ceiling: task timeout == auth-proxy x-token-ttl cap (Phase 3)
+    mounts:
+      "/tmp":
+        source: "tmp"
+
 services:
   postgresql:
     type: "postgresql:18"

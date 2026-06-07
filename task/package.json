@@ -1,0 +1,7 @@
+{
+  "name": "upsun-agent-task",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Upsun task entry point that runs one Paperclip agent heartbeat via the Claude Code CLI. No deps: uses Node built-ins plus the globally-installed claude CLI."
+}
