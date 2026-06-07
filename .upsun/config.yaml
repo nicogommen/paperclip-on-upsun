@@ -1,5 +1,8 @@
 # Upsun config for paperclip-on-upsun.
-# Phase 1 boot is green (route 200). Full rationale + history: ../JOURNAL.md, ../REFERENCE.md.
+# Phases 0-2 live: Paperclip authenticated+public (route 200), postgres 18, and the
+# upsun-agent task (below) runs the agent CLI to completion. Phase 3 (the upsun_task
+# adapter + the app's authorizations: block) is designed, not built.
+# Authoritative handoff + full rationale: ../JOURNAL.md ("CURRENT STATE" section), ../REFERENCE.md.
 
 applications:
   paperclip:
