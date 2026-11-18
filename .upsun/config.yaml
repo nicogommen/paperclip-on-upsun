@@ -11,8 +11,10 @@ applications:
     source:
       root: upstream
 
-    # Node 24 (upstream requires >= 24.11 and builds FROM node:24-trixie-slim).
-    type: "nodejs:24"
+    # Node 26, the only supported Node on Upsun (24 is deprecated). Upstream requires >= 24.11
+    # and only tests 24 in CI. Runtime has no tsx since the bundled entry, so June's Node 26
+    # loader breakage no longer applies. Fall back to 24 if the build or boot breaks.
+    type: "nodejs:26"
 
     # BALANCED, not the nodejs default HIGH_CPU: v2026.1117.0 runs out of heap at 224 MB.
     # 0.5 CPU gives 1088 MB here.
