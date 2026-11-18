@@ -67,10 +67,30 @@ for (const [name, eps] of Object.entries(rels)) {
 }
 if (process.env.RELAY_URL) await check("relay public route", process.env.RELAY_URL.replace(/^wss:/, "https:") + "/healthz");
 
+// Publish our IPs to the relay (internal relationship) so the app side can try to reach us.
+const relayRel = rels.relay?.[0];
+if (relayRel) {
+  try {
+    await fetch(`http://${relayRel.host}:${relayRel.port}/probe-info`, {
+      method: "POST",
+      body: JSON.stringify({ hostname: os.hostname(), ips, port: PORT }),
+      signal: AbortSignal.timeout(5000),
+    });
+    log("PROBE_PUBLISHED info to relay");
+  } catch (e) {
+    log("PROBE_PUBLISH failed", e.message);
+  }
+}
+
+// The shim dials the relay over the internal relationship by default (SHIM_VIA=relationship),
+// or over the public route (SHIM_VIA=public).
+const shimUrl = process.env.SHIM_VIA === "public" || !relayRel ? process.env.RELAY_URL : `ws://${relayRel.host}:${relayRel.port}`;
+log(`PROBE_SHIM via ${shimUrl}`);
+
 let shim;
-if (process.env.RELAY_URL && process.env.TUNNEL_ID && process.env.RELAY_TOKEN) {
+if (shimUrl && process.env.TUNNEL_ID && process.env.RELAY_TOKEN) {
   shim = startShim({
-    relayUrl: process.env.RELAY_URL,
+    relayUrl: shimUrl,
     tunnelId: process.env.TUNNEL_ID,
     token: process.env.RELAY_TOKEN,
     target: `ws://127.0.0.1:${PORT}`,

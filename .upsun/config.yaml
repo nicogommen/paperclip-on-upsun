@@ -111,6 +111,12 @@ applications:
     web:
       commands:
         start: "node server.mjs"
+      # WebSockets need request buffering off (Upsun "WebSocket routes" doc).
+      locations:
+        "/":
+          passthru: true
+          request_buffering:
+            enabled: false
 
 # Phase 2: the ephemeral task that runs one agent heartbeat (modeled on the playground's
 # coding-agent). Fire-and-forget, run-to-completion. Triggered via the Upsun API; in Phase 3
@@ -163,6 +169,8 @@ routes:
   "https://relay.{default}/":
     type: upstream
     upstream: "runner-relay:http"
+    cache:
+      enabled: false  # required for WebSockets
   "https://www.{default}/":
     type: redirect
     to: "https://{default}/"
