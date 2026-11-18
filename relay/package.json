@@ -1,0 +1,10 @@
+{
+  "name": "runner-relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WebSocket tunnel that lets Paperclip dial into a Paperclip Runner running in an Upsun task.",
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}

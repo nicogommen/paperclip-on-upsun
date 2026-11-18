@@ -102,6 +102,16 @@ applications:
       #   BETTER_AUTH_SECRET, PAPERCLIP_SECRETS_MASTER_KEY.
       # Agent API keys (ANTHROPIC/OPENAI) belong on the Phase 2 task, not here (PLAN §5.1).
 
+  # Runner-route experiment: WebSocket tunnel so Paperclip can reach a runner inside a task
+  # (tasks accept no inbound connections). See relay/server.mjs.
+  runner-relay:
+    source:
+      root: /relay
+    type: "nodejs:26"
+    web:
+      commands:
+        start: "node server.mjs"
+
 # Phase 2: the ephemeral task that runs one agent heartbeat (modeled on the playground's
 # coding-agent). Fire-and-forget, run-to-completion. Triggered via the Upsun API; in Phase 3
 # the upsun_task adapter triggers it on each Paperclip heartbeat. Tasks reject
@@ -122,6 +132,23 @@ tasks:
       "/tmp":
         source: "tmp"
 
+  # Runner-route experiment (branch runner-route): throwaway task that checks whether a
+  # runner in a task can be reached directly, and runs the relay shim with an echo server.
+  net-probe:
+    source:
+      root: /probe
+    type: "nodejs:26"
+    hooks:
+      build: |
+        set -eu
+        npm install --omit=dev --no-audit --no-fund
+    relationships:
+      pcapp: "paperclip:http"
+      relay: "runner-relay:http"
+    run:
+      command: "node probe.mjs"
+      timeout: 600
+
 services:
   postgresql:
     type: "postgresql:18"
@@ -130,6 +157,12 @@ routes:
   "https://{default}/":
     type: upstream
     upstream: "paperclip:http"
+    primary: true
+  # Runner-route experiment: Paperclip dials wss://relay.{default}/t/<tunnel>/... and the
+  # task dials out to the same host. Core requires wss, which the route provides.
+  "https://relay.{default}/":
+    type: upstream
+    upstream: "runner-relay:http"
   "https://www.{default}/":
     type: redirect
     to: "https://{default}/"
