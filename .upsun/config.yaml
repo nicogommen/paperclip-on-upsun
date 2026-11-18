@@ -59,7 +59,9 @@ applications:
         (cd packages/paperclip-runner && rustup show)
         mkdir -p "$PLATFORM_CACHE_DIR/runner-target"
         ln -sfn "$PLATFORM_CACHE_DIR/runner-target" packages/paperclip-runner/runner/target
-        pnpm config set store-dir "$PLATFORM_CACHE_DIR/pnpm-store"
+        # A pnpm store in the build cache doubles disk use and hits ENOSPC. Clear any leftover.
+        rm -rf "$PLATFORM_CACHE_DIR/pnpm-store"
+        df -h /app /tmp "$PLATFORM_CACHE_DIR" | sed 's/^/disk: /'
         # Same two-step install as upstream (the release lockfile can lag the manifests).
         pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
         pnpm install --frozen-lockfile
