@@ -6,12 +6,12 @@
 
 applications:
   paperclip:
-    # The app IS the pinned Paperclip submodule (v2026.529.0), rooted here so build/start use
+    # The app IS the pinned Paperclip submodule (v2026.1117.0), rooted here so build/start use
     # its native paths. NEVER edit upstream/; our additions are generated into the tree at build.
     source:
       root: upstream
 
-    # Node 24 LTS (Paperclip's own Dockerfile base). Node 26 breaks tsx's loader — see JOURNAL.
+    # Node 24 (upstream requires >= 24.11 and builds FROM node:24-trixie-slim).
     type: "nodejs:24"
 
     # pnpm pinned to Paperclip's declared packageManager, installed the Upsun-native way.
@@ -23,44 +23,51 @@ applications:
     build:
       flavor: none
 
+    # Build mirrors upstream's Dockerfile build stage. Needs >= 4 GB build memory (tsc + cargo).
     hooks:
       build: |
         set -eu
+        # Rust toolchain: the server build always builds the paperclip-runner native binary
+        # (cargo), with no skip switch. Pinned rustup like upstream's Dockerfile; the compiler
+        # version comes from the runner's rust-toolchain.toml. Toolchain + cargo target cached.
+        export RUSTUP_HOME="$PLATFORM_CACHE_DIR/rustup" CARGO_HOME="$PLATFORM_CACHE_DIR/cargo"
+        export PATH="$CARGO_HOME/bin:$PATH"
+        if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+          curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init"
+          echo "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10  /tmp/rustup-init" | sha256sum -c -
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none
+        fi
+        (cd packages/paperclip-runner && rustup show)
+        mkdir -p "$PLATFORM_CACHE_DIR/runner-target"
+        ln -sfn "$PLATFORM_CACHE_DIR/runner-target" packages/paperclip-runner/runner/target
+        # Same two-step install as upstream (the release lockfile can lag the manifests).
+        pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
         pnpm install --frozen-lockfile
-        pnpm run build
-        # Resolve hook: redirect workspace src/*.ts -> compiled dist/*.js so the server runs as
-        # plain node (no runtime tsx; its async loader deadlocks on Upsun Node 24). See JOURNAL.
-        cat > .upsun-dist-resolve.mjs <<'HOOK'
-        import { registerHooks } from "node:module";
-        import { existsSync } from "node:fs";
-        import { fileURLToPath } from "node:url";
-        registerHooks({
-          resolve(specifier, context, nextResolve) {
-            const r = nextResolve(specifier, context);
-            try {
-              if (r?.url?.startsWith("file:") && r.url.includes("/src/") && r.url.endsWith(".ts")) {
-                const distUrl = r.url.replace("/src/", "/dist/").replace(/\.ts$/, ".js");
-                if (existsSync(fileURLToPath(distUrl))) return { ...r, url: distUrl, format: "module" };
-              }
-            } catch {}
-            return r;
-          },
-        });
-        HOOK
+        export NODE_OPTIONS=--max-old-space-size=4096
+        pnpm --filter @paperclipai/ui build
+        pnpm --filter @paperclipai/plugin-sdk build
+        # Emit-only tsc: upstream measures > 10 GiB without it, ~2.5 GiB with it.
+        PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
+        pnpm --filter @paperclipai/server build:runtime
+        test -f server/dist-runtime/index.mjs
+        rm packages/paperclip-runner/runner/target
         # .environment: generated here (app root is the un-editable submodule), sourced at runtime
         # when relationship/route vars exist. DATABASE_URL scheme is hardcoded postgresql, NOT
         # $POSTGRESQL_SCHEME (= pgsql, which Paperclip rejects). PUBLIC_URL derived per-env from
-        # the primary route. See JOURNAL for the why.
+        # the primary route. NODE_ENV only here: as a build var it would make pnpm skip devDeps.
         cat > .environment <<'ENV'
+        export NODE_ENV=production
         export DATABASE_URL="postgresql://${POSTGRESQL_USERNAME}:${POSTGRESQL_PASSWORD}@${POSTGRESQL_HOST}:${POSTGRESQL_PORT}/${POSTGRESQL_PATH}"
         export PAPERCLIP_PUBLIC_URL="$(echo "$PLATFORM_ROUTES" | base64 -d | jq -r 'to_entries | map(select(.value.primary == true and .value.type == "upstream")) | .[0].key')"
         ENV
 
-    # Plain node on the compiled dist (no tsx — see resolve hook above). DATABASE_URL and
-    # PAPERCLIP_PUBLIC_URL come from the generated .environment, sourced before this runs.
+    # Upstream's bundled runtime entry (same CMD as its Dockerfile). It bundles the TS workspace
+    # packages, so the old src->dist resolve hook is gone. DATABASE_URL and PAPERCLIP_PUBLIC_URL
+    # come from the generated .environment, sourced before this runs.
     web:
       commands:
-        start: "node --import ./.upsun-dist-resolve.mjs server/dist/index.js"
+        start: "node server/dist-runtime/index.mjs"
       locations:
         "/":
           passthru: true

@@ -22,7 +22,8 @@ scripts/             deploy glue: build upstream, register the adapter (adapter-
 
 ## Status
 
-Scaffold. Not yet deployed. See `../JOURNAL.md` for current state and `../PLAN.md` for the phased plan.
+Paperclip runs on Upsun, and the `upsun-agent` task runs an agent CLI to completion. The adapter is not built yet. See `../JOURNAL.md` for current state and `../PLAN.md` for the phased plan.
 
-- Paperclip pinned to release **v2026.529.0**.
-- Target runtimes: Node.js 26 (24 fallback), PostgreSQL 18.
+- Paperclip pinned to release **v2026.1117.0**.
+- Runtimes: Node.js 24 for the app (upstream requires >= 24.11), Node.js 26 for the task, PostgreSQL 18.
+- The app build needs at least 4 GB of build memory (tsc plus a Rust compile of the Paperclip runner).
