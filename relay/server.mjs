@@ -25,6 +25,9 @@ const DROP = new Set([
   "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
   "x-relay-token", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host",
   "x-client-ip", "x-real-ip", "via",
+  // Added by the Upsun router on the way in. Not Core's, so not the runner's business.
+  "client-abuse-score", "client-asn", "client-country", "x-client-ssl", "x-client-verify",
+  "x-original-route", "traceparent", "tracestate", "accept-encoding",
 ]);
 
 const tunnels = new Map(); // tunnelId -> { token, control }
@@ -65,7 +68,64 @@ const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxP
 // Experiment only: the net-probe task posts its IPs here so they can be read while it runs.
 let probeInfo = null;
 
-const server = http.createServer((req, res) => {
+// --- Secret hand-off and Launcher status (internal relationship only) ---------------------
+// The plugin parks a task's secrets under a one-time fetch token. The task claims them once.
+// These endpoints refuse anything that came through the public router.
+const ADMIN_SECRET = process.env.RUNNER_RELAY_ADMIN_SECRET || "";
+const PARK_TTL_MS = 10 * 60_000;
+const parked = new Map();   // fetchToken -> { payload, tunnelId, expiresAt }
+const launcherStatus = new Map(); // tunnelId -> { phase, exitCode, at, token }
+const tunnelTokens = new Map(); // tunnelId -> relay token, from the parked payload
+
+const viaRouter = (req) => "x-original-route" in req.headers || "client-asn" in req.headers;
+const readJson = (req) => new Promise((resolve, reject) => {
+  let body = "";
+  req.on("data", (c) => { body += c; if (body.length > 16 * 1024 * 1024) req.destroy(); });
+  req.on("end", () => { try { resolve(JSON.parse(body || "{}")); } catch (e) { reject(e); } });
+});
+const json = (res, code, value) => { res.statusCode = code; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(value)); };
+setInterval(() => { const now = Date.now(); for (const [k, v] of parked) if (v.expiresAt < now) parked.delete(k); }, 60_000).unref();
+
+async function internalApi(req, res) {
+  const url = new URL(req.url, "http://relay");
+  let m;
+  if (url.pathname === "/admin/park" && req.method === "POST") {
+    if (!ADMIN_SECRET || !same(ADMIN_SECRET, req.headers["x-relay-admin"])) return json(res, 401, { error: "unauthorized" });
+    const { fetchToken, tunnelId, payload } = await readJson(req);
+    if (!fetchToken || !ID.test(tunnelId ?? "") || !payload?.relayToken) return json(res, 400, { error: "bad request" });
+    parked.set(fetchToken, { payload, tunnelId, expiresAt: Date.now() + PARK_TTL_MS });
+    tunnelTokens.set(tunnelId, payload.relayToken);
+    launcherStatus.set(tunnelId, { phase: "submitted", at: new Date().toISOString() });
+    log("parked", tunnelId);
+    return json(res, 200, { ok: true });
+  }
+  if ((m = url.pathname.match(/^\/admin\/status\/([^/]+)$/)) && req.method === "GET") {
+    if (!ADMIN_SECRET || !same(ADMIN_SECRET, req.headers["x-relay-admin"])) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, launcherStatus.get(m[1]) ?? null);
+  }
+  if ((m = url.pathname.match(/^\/claim\/([a-f0-9]{48})$/)) && req.method === "POST") {
+    const entry = parked.get(m[1]);
+    if (!entry) return json(res, 404, { error: "unknown or already claimed" });
+    parked.delete(m[1]);
+    log("claimed", entry.tunnelId);
+    return json(res, 200, entry.payload);
+  }
+  if ((m = url.pathname.match(/^\/status\/([^/]+)$/)) && req.method === "POST") {
+    if (!same(tunnelTokens.get(m[1]), req.headers["x-relay-token"])) return json(res, 401, { error: "unauthorized" });
+    const { phase, exitCode, detail } = await readJson(req);
+    launcherStatus.set(m[1], { phase, ...(typeof exitCode === "number" ? { exitCode } : {}), ...(detail ? { detail: String(detail).slice(0, 2000) } : {}), at: new Date().toISOString() });
+    log("launcher status", m[1], phase, exitCode ?? "", detail ? String(detail).slice(0, 300) : "");
+    return json(res, 200, { ok: true });
+  }
+  return false;
+}
+
+const server = http.createServer(async (req, res) => {
+  if (/^\/(admin|claim|status)\//.test(req.url)) {
+    if (viaRouter(req)) return json(res, 404, { error: "not found" });
+    try { if ((await internalApi(req, res)) !== false) return; } catch (e) { return json(res, 400, { error: e.message }); }
+    return json(res, 404, { error: "not found" });
+  }
   if (req.url === "/probe-info" && req.method === "POST") {
     let body = "";
     req.on("data", (c) => { body += c; if (body.length > 4096) req.destroy(); });

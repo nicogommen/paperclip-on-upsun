@@ -1,0 +1,14 @@
+{
+  "name": "@upsun/paperclip-plugin-upsun-tasks",
+  "version": "0.1.0",
+  "description": "Runs Paperclip Runner turns in Upsun task containers (task-capable environment driver).",
+  "type": "module",
+  "private": true,
+  "paperclipPlugin": {
+    "manifest": "./manifest.js",
+    "worker": "./worker.js"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

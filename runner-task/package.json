@@ -1,0 +1,10 @@
+{
+  "name": "upsun-runner-task",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Upsun task that runs one Paperclip Runner turn: claims its launch from the relay, fetches the provider pack from the app, opens the tunnel, starts paperclip-runnerd.",
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}

@@ -6,10 +6,10 @@
 
 applications:
   paperclip:
-    # The app IS the pinned Paperclip submodule (v2026.1117.0), rooted here so build/start use
-    # its native paths. NEVER edit upstream/; our additions are generated into the tree at build.
+    # Runner route: the app is rooted at paperclip/, which holds the pinned Paperclip submodule
+    # (paperclip/upstream, v2026.1117.0, NEVER edited) and our Upsun task plugin (paperclip/plugin).
     source:
-      root: upstream
+      root: paperclip
 
     # Node 26, the only supported Node on Upsun (24 is deprecated). Upstream requires >= 24.11
     # and only tests 24 in CI. Runtime has no tsx since the bundled entry, so June's Node 26
@@ -33,6 +33,18 @@ applications:
     hooks:
       build: |
         set -eu
+        APP=$PWD
+        # Pinned upstream commit (= the submodule pin). The provider pack records it.
+        UPSTREAM_COMMIT=c0f132898d2a2677312d8c72096187b27a3d9a38
+        # .environment at the app root, sourced at runtime. DATABASE_URL scheme is hardcoded
+        # postgresql, NOT $POSTGRESQL_SCHEME (= pgsql, which Paperclip rejects). PUBLIC_URL derived
+        # per-env from the primary route. NODE_ENV only here: as a build var pnpm would skip devDeps.
+        cat > .environment <<'ENV'
+        export NODE_ENV=production
+        export DATABASE_URL="postgresql://${POSTGRESQL_USERNAME}:${POSTGRESQL_PASSWORD}@${POSTGRESQL_HOST}:${POSTGRESQL_PORT}/${POSTGRESQL_PATH}"
+        export PAPERCLIP_PUBLIC_URL="$(echo "$PLATFORM_ROUTES" | base64 -d | jq -r 'to_entries | map(select(.value.primary == true and .value.type == "upstream")) | .[0].key')"
+        ENV
+        cd upstream
         # Rust toolchain: the server build always builds the paperclip-runner native binary
         # (cargo), with no skip switch. Pinned rustup like upstream's Dockerfile; the compiler
         # version comes from the runner's rust-toolchain.toml. Toolchain + cargo target cached.
@@ -47,6 +59,7 @@ applications:
         (cd packages/paperclip-runner && rustup show)
         mkdir -p "$PLATFORM_CACHE_DIR/runner-target"
         ln -sfn "$PLATFORM_CACHE_DIR/runner-target" packages/paperclip-runner/runner/target
+        pnpm config set store-dir "$PLATFORM_CACHE_DIR/pnpm-store"
         # Same two-step install as upstream (the release lockfile can lag the manifests).
         pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
         pnpm install --frozen-lockfile
@@ -57,26 +70,51 @@ applications:
         PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
         pnpm --filter @paperclipai/server build:runtime
         test -f server/dist-runtime/index.mjs
+        # Provider pack for the runner task (runnerd + node + ACPX/Claude tooling), built the way
+        # upstream's Dockerfile builds its remote pack. Served to the task from /_upsun-runner/.
+        mkdir -p "$APP/runner-pack"
+        PAPERCLIP_RUNNER_SOURCE_REVISION=$UPSTREAM_COMMIT node packages/paperclip-runner/scripts/build-provider-pack.mjs "$APP/runner-pack/provider-pack"
+        node scripts/create-provider-pack-archive.mjs "$APP/runner-pack/provider-pack"
+        test -x "$APP/runner-pack/provider-pack/dist/bin/paperclip-runnerd"
+        cp "$APP/runner-pack/provider-pack/provider-pack.json" "$APP/runner-pack/provider-pack/dist/bin/paperclip-runnerd" "$APP/runner-pack/"
+        du -sh "$APP/runner-pack/provider-pack" "$APP/runner-pack/provider-pack.tar.zst"
+        rm -rf "$APP/runner-pack/provider-pack"
         rm packages/paperclip-runner/runner/target
-        # .environment: generated here (app root is the un-editable submodule), sourced at runtime
-        # when relationship/route vars exist. DATABASE_URL scheme is hardcoded postgresql, NOT
-        # $POSTGRESQL_SCHEME (= pgsql, which Paperclip rejects). PUBLIC_URL derived per-env from
-        # the primary route. NODE_ENV only here: as a build var it would make pnpm skip devDeps.
-        cat > .environment <<'ENV'
-        export NODE_ENV=production
-        export DATABASE_URL="postgresql://${POSTGRESQL_USERNAME}:${POSTGRESQL_PASSWORD}@${POSTGRESQL_HOST}:${POSTGRESQL_PORT}/${POSTGRESQL_PATH}"
-        export PAPERCLIP_PUBLIC_URL="$(echo "$PLATFORM_ROUTES" | base64 -d | jq -r 'to_entries | map(select(.value.primary == true and .value.type == "upstream")) | .[0].key')"
-        ENV
+        # Our plugin resolves the SDK and runner packages from the pinned upstream build.
+        mkdir -p "$APP/plugin/node_modules/@paperclipai"
+        ln -sfn ../../../upstream/packages/plugins/sdk "$APP/plugin/node_modules/@paperclipai/plugin-sdk"
+        ln -sfn ../../../upstream/packages/paperclip-runner "$APP/plugin/node_modules/@paperclipai/paperclip-runner"
+        (cd "$APP/plugin" && node -e 'import("./manifest.js").then(m => console.log("plugin manifest ok:", m.default.id))')
+      # Settings for the plugin worker, which gets no PLATFORM_* variables: written on the
+      # mount at each deploy (600), read by paperclip/plugin/worker.js.
+      deploy: |
+        set -eu
+        RELAY_PUBLIC=$(echo "$PLATFORM_ROUTES" | base64 -d | jq -r 'to_entries | map(select(.value.type == "upstream" and (.value.upstream | startswith("runner-relay")))) | .[0].key' | sed 's#^https://#wss://#; s#/$##')
+        RELAY_INTERNAL=$(echo "$PLATFORM_RELATIONSHIPS" | base64 -d | jq -r '.relay[0] | "http://\(.host):\(.port)"')
+        umask 077
+        jq -n --arg p "$PLATFORM_PROJECT" --arg e "$PLATFORM_BRANCH" --arg pub "$RELAY_PUBLIC" --arg int "$RELAY_INTERNAL" \
+          --arg s "${RUNNER_RELAY_ADMIN_SECRET:-}" \
+          '{projectId: $p, environment: $e, taskName: "runner", relayPublicWss: $pub, relayInternalUrl: $int, relayAdminSecret: $s}' \
+          > paperclip-home/upsun-runner.json
+        jq '{projectId, environment, taskName, relayPublicWss, relayInternalUrl, adminSecretSet: (.relayAdminSecret != "")}' paperclip-home/upsun-runner.json
 
-    # Upstream's bundled runtime entry (same CMD as its Dockerfile). It bundles the TS workspace
-    # packages, so the old src->dist resolve hook is gone. DATABASE_URL and PAPERCLIP_PUBLIC_URL
-    # come from the generated .environment, sourced before this runs.
+    # Upstream's bundled runtime entry (same CMD as its Dockerfile), run from the submodule.
+    # DATABASE_URL and PAPERCLIP_PUBLIC_URL come from the generated .environment.
     web:
       commands:
-        start: "node server/dist-runtime/index.mjs"
+        start: "cd upstream && exec node server/dist-runtime/index.mjs"
       locations:
         "/":
           passthru: true
+        # Provider pack for the runner task (fetched over the internal relationship). Public code
+        # from the pinned open-source release, no secrets.
+        "/_upsun-runner":
+          root: "runner-pack"
+          passthru: false
+          allow: false
+          rules:
+            '\.(zst|json)$':
+              allow: true
 
     # Persistent state across redeploys. Mount keys are relative to the app root, so this lives
     # at /app/paperclip-home at runtime — PAPERCLIP_HOME must match it or the app's mkdir ENOENTs.
@@ -87,6 +125,16 @@ applications:
 
     relationships:
       postgresql: "postgresql:postgresql"
+      relay: "runner-relay:http"  # plugin parks task secrets and reads Launcher status here
+
+    # Lets the plugin get a scoped token from the local auth proxy (localhost:8200) to start
+    # and watch runner tasks, with no user token.
+    authorizations:
+      - type: task
+        resource: runner
+        action: operate
+      - type: env
+        action: view
 
     variables:
       env:
@@ -134,6 +182,27 @@ tasks:
     run:
       command: "node run.js"
       timeout: 900  # common ceiling: task timeout == auth-proxy x-token-ttl cap (Phase 3)
+    mounts:
+      "/tmp":
+        source: "tmp"
+
+  # Runner route: one Paperclip Runner turn per task run. Started by the Upsun task plugin
+  # (paperclip/plugin). The Launcher claims its secrets from the relay, fetches the provider pack
+  # from the app, opens the tunnel and starts paperclip-runnerd.
+  runner:
+    source:
+      root: /runner-task
+    type: "nodejs:26"
+    hooks:
+      build: |
+        set -eu
+        npm install --omit=dev --no-audit --no-fund
+    relationships:
+      relay: "runner-relay:http"
+      pcapp: "paperclip:http"
+    run:
+      command: "node launcher.mjs"
+      timeout: 900
     mounts:
       "/tmp":
         source: "tmp"
