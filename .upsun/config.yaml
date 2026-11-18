@@ -14,6 +14,10 @@ applications:
     # Node 24 (upstream requires >= 24.11 and builds FROM node:24-trixie-slim).
     type: "nodejs:24"
 
+    # BALANCED, not the nodejs default HIGH_CPU: v2026.1117.0 runs out of heap at 224 MB.
+    # 0.5 CPU gives 1088 MB here.
+    container_profile: BALANCED
+
     # pnpm pinned to Paperclip's declared packageManager, installed the Upsun-native way.
     dependencies:
       nodejs:
