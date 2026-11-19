@@ -8,8 +8,8 @@
 //  4. Reports its phase to the relay (the plugin's `status` reads it) and exits with runnerd.
 
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
@@ -51,26 +51,34 @@ async function claim() {
   return res.json();
 }
 
+// Download, hash, decompress and extract in one stream (no temp file). The hash is checked at
+// the end; a mismatch aborts the run before anything in the pack is executed.
 async function fetchPack(expectedSha, target) {
   const started = Date.now();
   const res = await fetch(`${appHttp}/_upsun-runner/provider-pack.tar.zst`);
   if (!res.ok) throw new Error(`pack download failed: ${res.status}`);
-  const archive = "/tmp/provider-pack.tar.zst";
+  await rm(target, { recursive: true, force: true });
+  await mkdir(target, { recursive: true });
   const hash = createHash("sha256");
   const body = Readable.fromWeb(res.body);
   body.on("data", (c) => hash.update(c));
-  await pipeline(body, createWriteStream(archive));
-  const sha = hash.digest("hex");
-  if (sha !== expectedSha) throw new Error(`pack sha256 mismatch: ${sha}`);
-  log(`pack downloaded in ${Date.now() - started}ms`);
-  await rm(target, { recursive: true, force: true });
-  await mkdir(target, { recursive: true });
   const tar = spawn("tar", ["-xf", "-", "-C", target], { stdio: ["pipe", "inherit", "inherit"] });
   const done = new Promise((resolve, reject) => tar.on("close", (c) => (c === 0 ? resolve() : reject(new Error(`tar exit ${c}`)))));
-  await pipeline(createReadStream(archive), createZstdDecompress(), tar.stdin);
+  await pipeline(body, createZstdDecompress(), tar.stdin);
   await done;
-  await rm(archive, { force: true });
-  log(`pack extracted in ${Date.now() - started}ms total`);
+  const sha = hash.digest("hex");
+  if (sha !== expectedSha) throw new Error(`pack sha256 mismatch: ${sha}`);
+  log(`pack streamed and extracted in ${Date.now() - started}ms`);
+}
+
+// The Claude SDK native binary is installed in this task's image (package.json pins the same
+// version as the pack) and linked back where the pack's dependency graph expects it.
+async function linkClaudeSdk(packRoot) {
+  const version = "0.3.286";
+  const source = join(dirname(fileURLToPath(import.meta.url)), "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64");
+  const parent = join(packRoot, `node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@${version}/node_modules/@anthropic-ai`);
+  await mkdir(parent, { recursive: true });
+  await symlink(source, join(parent, "claude-agent-sdk-linux-x64"));
 }
 
 async function fetchRunner(expectedDigest, target) {
@@ -115,6 +123,7 @@ async function main() {
   await report("starting");
   const host = payload.host;
   await fetchPack(payload.pack.sha256, host.pack);
+  await linkClaudeSdk(host.pack);
   const manifest = JSON.parse(await readFile(join(host.pack, "provider-pack.json"), "utf8"));
   if (manifest.digest !== payload.pack.digest) throw new Error("provider pack identity changed");
   const runnerBinaryPath = "/tmp/runner-bin/paperclip-runnerd";

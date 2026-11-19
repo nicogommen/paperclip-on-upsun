@@ -86,6 +86,11 @@ applications:
         for pkg in /tmp/provider-pack/node_modules/.pnpm/@openai+codex* /tmp/provider-pack/node_modules/.pnpm/opencode-* /tmp/provider-pack/node_modules/.pnpm/@github+copilot* /tmp/provider-pack/node_modules/.pnpm/@cursor* ; do
           [ -e "$pkg" ] && echo "pack prune: $(basename "$pkg")" && rm -rf "$pkg"
         done
+        # The Claude SDK native binary (~236 MB) is installed in the runner task image instead
+        # (runner-task/package.json pins the same version), so each run downloads far less.
+        ls -d /tmp/provider-pack/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@* | sed 's/^/pack offload: /'
+        test -d /tmp/provider-pack/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@0.3.286
+        rm -rf /tmp/provider-pack/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@0.3.286
         du -sh /tmp/provider-pack
         # Single tar+zstd archive with one SHA-256 (the script's CLI writes a layered format).
         node -e 'import("./scripts/create-provider-pack-archive.mjs").then(m => m.createProviderPackArchive("/tmp/provider-pack")).then(r => console.log("pack archive", JSON.stringify(r)))'
@@ -106,7 +111,7 @@ applications:
             await m.bundleRuntime({ entry: process.cwd() + "/worker.js", outdir: process.cwd() + "/dist/worker" });
             await m.bundleRuntime({ entry: process.cwd() + "/plugin.js", outdir: process.cwd() + "/dist/hooks" });
             // Core probe for tools/probe-harness.mjs (bundling at runtime runs out of memory).
-            await m.bundleRuntime({ entry: process.cwd() + "/../upstream/server/dist/services/native-runtime/plugin-runner-probe.js", outdir: process.cwd() + "/dist/probe" });
+            await m.bundleRuntime({ entry: process.cwd() + "/tools/harness-entry.js", outdir: process.cwd() + "/dist/probe" });
             const manifest = (await import("./manifest.js")).default;
             const hooks = (await import("./dist/hooks/server.mjs")).default;
             console.log("plugin ok:", manifest.id, Object.keys(hooks.definition).length, "hooks");
