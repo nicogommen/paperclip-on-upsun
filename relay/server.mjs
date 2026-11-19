@@ -73,6 +73,8 @@ const PARK_TTL_MS = 10 * 60_000;
 const parked = new Map();   // fetchToken -> { payload, tunnelId, expiresAt }
 const launcherStatus = new Map(); // tunnelId -> { phase, exitCode, at, token }
 const tunnelTokens = new Map(); // tunnelId -> relay token, from the parked payload
+const runnerStates = new Map(); // tunnelId -> { state, at }, the runner's durable state mirror
+setInterval(() => { const old = Date.now() - 6 * 3600_000; for (const [k, v] of runnerStates) if (v.at < old) runnerStates.delete(k); }, 600_000).unref();
 
 const viaRouter = (req) => "x-original-route" in req.headers || "client-asn" in req.headers;
 const readJson = (req) => new Promise((resolve, reject) => {
@@ -107,6 +109,17 @@ async function internalApi(req, res) {
     log("claimed", entry.tunnelId);
     return json(res, 200, entry.payload);
   }
+  // Runner durable state mirror: pushed by the Launcher, read by the plugin for read_state.
+  if ((m = url.pathname.match(/^\/state\/([^/]+)$/)) && req.method === "POST") {
+    if (!same(tunnelTokens.get(m[1]), req.headers["x-relay-token"])) return json(res, 401, { error: "unauthorized" });
+    const state = await readJson(req);
+    runnerStates.set(m[1], { state, at: Date.now() });
+    return json(res, 200, { ok: true });
+  }
+  if ((m = url.pathname.match(/^\/admin\/state\/([^/]+)$/)) && req.method === "GET") {
+    if (!ADMIN_SECRET || !same(ADMIN_SECRET, req.headers["x-relay-admin"])) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, runnerStates.get(m[1])?.state ?? null);
+  }
   if ((m = url.pathname.match(/^\/status\/([^/]+)$/)) && req.method === "POST") {
     if (!same(tunnelTokens.get(m[1]), req.headers["x-relay-token"])) return json(res, 401, { error: "unauthorized" });
     const { phase, exitCode, detail } = await readJson(req);
@@ -118,7 +131,7 @@ async function internalApi(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (/^\/(admin|claim|status)\//.test(req.url)) {
+  if (/^\/(admin|claim|status|state)\//.test(req.url)) {
     if (viaRouter(req)) return json(res, 404, { error: "not found" });
     try { if ((await internalApi(req, res)) !== false) return; } catch (e) { return json(res, 400, { error: e.message }); }
     return json(res, 404, { error: "not found" });

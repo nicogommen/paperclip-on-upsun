@@ -130,6 +130,26 @@ async function dumpDiagnostics() {
   await walk("/tmp/agent/acpx");
 }
 
+// The runner's durable state (runner-state.json), mirrored to the relay so the plugin can
+// answer Core's read_state while the task runs and after it is gone. Pushed when it changes.
+const STATE_FILE = "/tmp/runner-state/runner-state.json";
+let lastState = "";
+async function pushState() {
+  let text;
+  try { text = await readFile(STATE_FILE, "utf8"); } catch { return; }
+  if (!text || text === lastState) return;
+  try { JSON.parse(text); } catch { return; } // mid-write: try again on the next tick
+  lastState = text;
+  try {
+    await fetch(`${relayHttp}/state/${tunnelId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-relay-token": relayToken },
+      body: text,
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) { log("state push failed", e.message); }
+}
+
 async function waitForPort(deadlineMs) {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -221,7 +241,10 @@ async function main() {
     await report("exited", { exitCode: 1, detail: e.message });
     throw e;
   }
+  const stateTimer = setInterval(() => { pushState(); }, 500);
   const result = await handle.completion;
+  clearInterval(stateTimer);
+  await pushState(); // final state (suspended) before reporting exit
   log("runnerd exited", JSON.stringify({ code: result.code, signal: result.signal }));
   await dumpDiagnostics();
   if (result.stderr) log("runnerd stderr tail:", String(result.stderr).slice(-2000));

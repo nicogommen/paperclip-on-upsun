@@ -238,8 +238,29 @@ async function stop(params) {
   }
 }
 
+// The runner's durable state, mirrored to the relay by the Launcher. Only this task's state,
+// and only when its identity matches the one Core asks for.
+async function readState(params, op) {
+  const t = taskState(params.taskId);
+  const tunnelId = t.tunnelId ?? tunnelIdFor(params.taskId);
+  const state = await relay("GET", `/admin/state/${tunnelId}`);
+  if (!state || typeof state !== "object") throw new Error("runner state unavailable for this task");
+  for (const [key, value] of Object.entries(op.identity ?? {})) {
+    if (state[key] !== value) throw new Error(`runner state identity mismatch on ${key}`);
+  }
+  return { kind: "state", taskId: params.taskId, state };
+}
+
+// Paperclip deliberately does not log task errors (they could hold secrets), so the plugin
+// logs each operation, its duration and our own error messages (which never carry secrets).
+let pluginLogger = null;
+function logOp(kind, taskId, started, error) {
+  const line = `task op ${kind} task=${String(taskId).slice(-12)} ${Date.now() - started}ms${error ? ` ERROR ${error.message}` : ""}`;
+  if (pluginLogger) (error ? pluginLogger.warn(line) : pluginLogger.info(line));
+}
+
 const plugin = definePlugin({
-  async setup(ctx) { ctx.logger.info("Upsun task environment plugin ready"); },
+  async setup(ctx) { pluginLogger = ctx.logger; ctx.logger.info("Upsun task environment plugin ready"); },
   async onHealth() { return { status: "ok", message: "Upsun task environment plugin healthy" }; },
   async onEnvironmentValidateConfig(params) {
     return { ok: true, normalizedConfig: { taskName: params.config?.taskName ?? "runner" } };
@@ -269,9 +290,24 @@ const plugin = definePlugin({
     return { providerLeaseId: params.providerLeaseId, state: tasks.has(params.providerLeaseId) ? "active" : "destroyed" };
   },
   async onEnvironmentTask(params) {
+    const started = Date.now();
+    try {
+      const result = await handleTask(params);
+      logOp(params.operation.kind, params.taskId, started);
+      return result;
+    } catch (error) {
+      logOp(params.operation.kind, params.taskId, started, error);
+      throw error;
+    }
+  },
+});
+
+async function handleTask(params) {
     const op = params.operation;
     const taskId = params.taskId;
     switch (op.kind) {
+      case "read_state":
+        return readState(params, op);
       case "describe": {
         const { runner } = pack();
         return { kind: "description", taskId, runner: { version: runner.version, digest: runner.digest },
@@ -309,7 +345,6 @@ const plugin = definePlugin({
       default:
         throw new Error(`Unsupported task operation: ${op.kind}`);
     }
-  },
-});
+}
 
 export default plugin;
