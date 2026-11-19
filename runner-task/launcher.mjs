@@ -140,6 +140,25 @@ async function main() {
   const artifacts = manifest.payload.artifacts;
   const launch = payload.launch;
   const acpx = payload.providerKind === "acpx";
+  const baseEnv = { PATH: `${join(host.pack, "node_modules/.bin")}:${process.env.PATH}`, HOME: "/tmp/agent-home", ...payload.credentialEnv };
+  // With a plugin-prepared launch, Core sends the runner no provider environment: the process
+  // owner supplies it. Build it with the runner's own function, as Core does for local launches
+  // (ACPX package root and manifest, sanitized credentials, credential binding, identity).
+  let providerEnv = {};
+  if (acpx) {
+    const { createCapabilityRunnerdProviderEnvironment } = await import(join(host.pack, "dist/live/runnerd-codex-transport.js"));
+    const acpxSidecarPath = join(host.pack, artifacts.acpxSidecar.path);
+    providerEnv = createCapabilityRunnerdProviderEnvironment({
+      provider: "acpx",
+      options: { acpxAgent: payload.harness, environment: baseEnv, stateDirectory: "/tmp/runner-state", acpxSidecarPath },
+      identity: payload.identity,
+      codexHome: join(host.root, "codex"),
+      runtimeContextPath: "/tmp/runner-state/runtime-context.json",
+      hasRuntimeContext: false,
+      acpxSidecarPath,
+    });
+    log("provider env keys:", Object.keys(providerEnv).filter((k) => !/KEY|TOKEN|SECRET|BINDING/.test(k)).sort().join(","));
+  }
   const handle = spawnRunner({
     connection: { mode: "listen", listenAddress: "0.0.0.0", listenPort: PORT, listenPath: `/api/runner/v1/connect/${payload.identity.runId}` },
     stateDirectory: "/tmp/runner-state",
@@ -161,11 +180,7 @@ async function main() {
       sidecarScript: join(host.pack, artifacts.acpxSidecar.path),
       sidecarScriptSha256: artifacts.acpxSidecar.sha256,
     } } : {}),
-    environment: {
-      PATH: `${join(host.pack, "node_modules/.bin")}:${process.env.PATH}`,
-      HOME: "/tmp/agent-home",
-      ...payload.credentialEnv,
-    },
+    environment: { ...baseEnv, ...providerEnv },
     diagnosticsDirectory: "/tmp/runner-diagnostics",
   });
   handle.child.stderr?.on?.("data", (d) => process.stderr.write(d));
