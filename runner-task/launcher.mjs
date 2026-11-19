@@ -108,9 +108,11 @@ async function writeBundles(bundles) {
 
 // Container limits and OOM kills, plus runnerd's own diagnostics (credentials redacted).
 async function dumpDiagnostics() {
-  for (const f of ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/cpu.max"]) {
+  for (const f of ["/proc/self/cgroup", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/cpu.max",
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes", "/sys/fs/cgroup/memory/memory.failcnt", "/sys/fs/cgroup/memory/memory.oom_control"]) {
     try { log(`${f}: ${(await readFile(f, "utf8")).trim().replace(/\n/g, " | ")}`); } catch {}
   }
+  try { log(`meminfo: ${(await readFile("/proc/meminfo", "utf8")).split("\n").slice(0, 3).join(" | ")}`); } catch {}
   const walk = async (dir) => {
     let names = [];
     try { names = await readdir(dir, { withFileTypes: true }); } catch { return; }
@@ -124,7 +126,23 @@ async function dumpDiagnostics() {
     }
   };
   await walk("/tmp/runner-diagnostics");
-  await walk("/tmp/runner-state/diagnostics");
+  await walk("/tmp/runner-state");
+  await walk("/tmp/agent/acpx");
+}
+
+// Can the Claude binary start at all in this container (memory)?
+async function claudeSelfTest(packRoot) {
+  const bin = join(packRoot, "node_modules/.bin/claude");
+  const started = Date.now();
+  await new Promise((resolve) => {
+    const child = spawn(bin, ["--version"], { env: { PATH: process.env.PATH, HOME: "/tmp/agent-home" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { out += d; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+    child.on("close", (code, signal) => { clearTimeout(timer); log(`claude --version -> code=${code} signal=${signal} in ${Date.now() - started}ms: ${out.trim().slice(0, 300)}`); resolve(); });
+    child.on("error", (e) => { clearTimeout(timer); log(`claude --version spawn error: ${e.message}`); resolve(); });
+  });
 }
 
 async function waitForPort(deadlineMs) {
@@ -218,6 +236,7 @@ async function main() {
   const result = await handle.completion;
   log("runnerd exited", JSON.stringify({ code: result.code, signal: result.signal }));
   await dumpDiagnostics();
+  await claudeSelfTest(host.pack);
   if (result.stderr) log("runnerd stderr tail:", String(result.stderr).slice(-2000));
   await report("exited", { exitCode: result.code ?? 1, ...(result.code ? { detail: String(result.stderr ?? "").slice(-1500) } : {}) });
   shim.stop();
