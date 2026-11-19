@@ -136,8 +136,12 @@ applications:
       commands:
         start: "cd upstream && exec node server/dist-runtime/index.mjs"
       locations:
+        # Request buffering off: the UI's live-updates WebSocket (/api/companies/<id>/events/ws)
+        # needs it, together with cache off on the route (Upsun "WebSocket routes" doc).
         "/":
           passthru: true
+          request_buffering:
+            enabled: false
         # Provider pack for the runner task (fetched over the internal relationship). Public code
         # from the pinned open-source release, no secrets.
         "/_upsun-runner":
@@ -254,6 +258,11 @@ routes:
     type: upstream
     upstream: "paperclip:http"
     primary: true
+    # Required for the UI's live-updates WebSocket. Without it the router turns the upgrade into
+    # a plain GET (404), the UI retries every few seconds, and long requests on the same browser
+    # connection (the agent test) get re-sent, each re-send starting a new runner task.
+    cache:
+      enabled: false
   # Paperclip dials wss://relay.{default}/t/<tunnel>/... and the
   # task dials out to the same host. Core requires wss, which the route provides.
   "https://relay.{default}/":
