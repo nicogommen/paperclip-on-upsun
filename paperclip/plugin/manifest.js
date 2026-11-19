@@ -10,7 +10,8 @@ const manifest = {
   author: "Upsun",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
-  entrypoints: { worker: "./worker.js" },
+  // Bundled at build (see .upsun/config.yaml): Paperclip's packages ship TypeScript sources.
+  entrypoints: { worker: "./dist/worker/index.mjs" },
   environmentDrivers: [
     {
       driverKey: "upsun-task",

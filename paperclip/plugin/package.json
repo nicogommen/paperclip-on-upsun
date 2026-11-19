@@ -6,7 +6,7 @@
   "private": true,
   "paperclipPlugin": {
     "manifest": "./manifest.js",
-    "worker": "./worker.js"
+    "worker": "./dist/worker/index.mjs"
   },
   "engines": {
     "node": ">=24.11.0"

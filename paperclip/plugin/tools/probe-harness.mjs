@@ -7,7 +7,7 @@
 // ANTHROPIC_API_KEY environment variable (the project variable), as a claude-env credential.
 
 import { randomUUID } from "node:crypto";
-import plugin from "../plugin.js";
+import plugin from "../dist/hooks/server.mjs";
 
 const UPSTREAM = "/app/upstream";
 const model = process.argv[2] || "claude-sonnet-5-5";

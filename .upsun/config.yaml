@@ -98,7 +98,18 @@ applications:
         mkdir -p "$APP/plugin/node_modules/@paperclipai"
         ln -sfn ../../../upstream/packages/plugins/sdk "$APP/plugin/node_modules/@paperclipai/plugin-sdk"
         ln -sfn ../../../upstream/packages/paperclip-runner "$APP/plugin/node_modules/@paperclipai/paperclip-runner"
-        (cd "$APP/plugin" && node -e 'import("./manifest.js").then(m => console.log("plugin manifest ok:", m.default.id))')
+        # Paperclip's packages import @paperclipai/shared as TypeScript source, so the plugin is
+        # bundled the way upstream bundles its server (bundleRuntime: @paperclipai/* inlined,
+        # third-party deps external by absolute path). dist/worker = process entry,
+        # dist/hooks = importable hooks for tools/probe-harness.mjs.
+        (cd "$APP/plugin" && node -e '
+          import("../upstream/server/scripts/bundle-runtime.mjs").then(async m => {
+            await m.bundleRuntime({ entry: process.cwd() + "/worker.js", outdir: process.cwd() + "/dist/worker" });
+            await m.bundleRuntime({ entry: process.cwd() + "/plugin.js", outdir: process.cwd() + "/dist/hooks" });
+            const manifest = (await import("./manifest.js")).default;
+            const hooks = (await import("./dist/hooks/server.mjs")).default;
+            console.log("plugin ok:", manifest.id, Object.keys(hooks.definition).length, "hooks");
+          })')
       # Settings for the plugin worker, which gets no PLATFORM_* variables: written on the
       # mount at each deploy (600), read by paperclip/plugin/worker.js.
       deploy: |
