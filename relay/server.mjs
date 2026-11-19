@@ -144,35 +144,6 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true, tunnels: tunnels.size, pending: pending.size }));
     return;
   }
-  // Diagnostic (router investigation): answer after ?s= seconds, log every arrival and whether
-  // the client went away first. /slow goes through a buffered location (like Paperclip's),
-  // /nb/slow through the unbuffered "/" location. ?trickle=1 sends a byte every 5 s meanwhile.
-  {
-    const u = new URL(req.url, "http://relay");
-    if (u.pathname === "/slow" || u.pathname === "/nb/slow") {
-      const seconds = Math.min(Number(u.searchParams.get("s") || 30), 300);
-      const tag = String(u.searchParams.get("tag") || "-").slice(0, 40);
-      const started = Date.now();
-      const proto = `${req.headers["x-forwarded-proto"] ?? "?"} http/${req.httpVersion}`;
-      log(`SLOW arrive tag=${tag} ${req.method} ${u.pathname} s=${seconds} ${proto} ua=${String(req.headers["user-agent"] ?? "").slice(0, 60)}`);
-      req.resume();
-      let done = false;
-      res.on("close", () => { if (!done) log(`SLOW client-gone tag=${tag} after ${Date.now() - started}ms`); });
-      let trickle;
-      if (u.searchParams.get("trickle") === "1") {
-        res.writeHead(200, { "content-type": "text/plain" });
-        trickle = setInterval(() => res.write("."), 5000);
-      }
-      setTimeout(() => {
-        clearInterval(trickle);
-        done = true;
-        if (!res.headersSent) res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ ok: true, tag, waitedMs: Date.now() - started }));
-        log(`SLOW done tag=${tag} after ${Date.now() - started}ms`);
-      }, seconds * 1000);
-      return;
-    }
-  }
   res.statusCode = 404;
   res.end();
 });

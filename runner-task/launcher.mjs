@@ -106,13 +106,9 @@ async function writeBundles(bundles) {
   }
 }
 
-// Container limits and OOM kills, plus runnerd's own diagnostics (credentials redacted).
+// On a failed run only: runnerd's own diagnostics and state files (credentials redacted). Agent
+// session files (prompts, transcripts) are never written to the task log.
 async function dumpDiagnostics() {
-  for (const f of ["/proc/self/cgroup", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/cpu.max",
-    "/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes", "/sys/fs/cgroup/memory/memory.failcnt", "/sys/fs/cgroup/memory/memory.oom_control"]) {
-    try { log(`${f}: ${(await readFile(f, "utf8")).trim().replace(/\n/g, " | ")}`); } catch {}
-  }
-  try { log(`meminfo: ${(await readFile("/proc/meminfo", "utf8")).split("\n").slice(0, 3).join(" | ")}`); } catch {}
   const walk = async (dir) => {
     let names = [];
     try { names = await readdir(dir, { withFileTypes: true }); } catch { return; }
@@ -127,7 +123,6 @@ async function dumpDiagnostics() {
   };
   await walk("/tmp/runner-diagnostics");
   await walk("/tmp/runner-state");
-  await walk("/tmp/agent/acpx");
 }
 
 // The runner's durable state (runner-state.json), mirrored to the relay so the plugin can
@@ -246,7 +241,7 @@ async function main() {
   clearInterval(stateTimer);
   await pushState(); // final state (suspended) before reporting exit
   log("runnerd exited", JSON.stringify({ code: result.code, signal: result.signal }));
-  await dumpDiagnostics();
+  if (result.code !== 0) await dumpDiagnostics();
   if (result.stderr) log("runnerd stderr tail:", String(result.stderr).slice(-2000));
   shim.stop();
   await report("exited", { exitCode: result.code ?? 1, ...(result.code ? { detail: String(result.stderr ?? "").slice(-1500) } : {}) });

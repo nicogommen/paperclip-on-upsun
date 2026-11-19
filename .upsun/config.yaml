@@ -2,7 +2,6 @@
 # paperclip: unmodified Paperclip (submodule) + our Upsun task plugin. Each agent run starts the
 # `runner` task, which runs Paperclip's own Runner. runner-relay connects Paperclip to the runner,
 # since a task accepts no inbound connections. postgresql: Paperclip's database.
-# upsun-agent: the earlier adapter-route task, kept until that route is retired.
 # Rationale and history: ../JOURNAL.md, ../PLAN.md.
 
 applications:
@@ -106,13 +105,11 @@ applications:
         # Paperclip's packages import @paperclipai/shared as TypeScript source, so the plugin is
         # bundled the way upstream bundles its server (bundleRuntime: @paperclipai/* inlined,
         # third-party deps external by absolute path). dist/worker = process entry,
-        # dist/hooks = importable hooks for tools/probe-harness.mjs.
+        # dist/hooks = the same hooks, imported once here to fail the build if the plugin is broken.
         (cd "$APP/plugin" && node -e '
           import("../upstream/server/scripts/bundle-runtime.mjs").then(async m => {
             await m.bundleRuntime({ entry: process.cwd() + "/worker.js", outdir: process.cwd() + "/dist/worker" });
             await m.bundleRuntime({ entry: process.cwd() + "/plugin.js", outdir: process.cwd() + "/dist/hooks" });
-            // Core probe for tools/probe-harness.mjs (bundling at runtime runs out of memory).
-            await m.bundleRuntime({ entry: process.cwd() + "/tools/harness-entry.js", outdir: process.cwd() + "/dist/probe" });
             const manifest = (await import("./manifest.js")).default;
             const hooks = (await import("./dist/hooks/server.mjs")).default;
             console.log("plugin ok:", manifest.id, Object.keys(hooks.definition).length, "hooks");
@@ -201,31 +198,8 @@ applications:
           passthru: true
           request_buffering:
             enabled: false
-        # Diagnostic: same location settings as the paperclip app (default request buffering),
-        # used to reproduce long-request behavior through the router. See relay/server.mjs.
-        "/slow":
-          passthru: true
 
-# Phase 2: the ephemeral task that runs one agent heartbeat (modeled on the playground's
-# coding-agent). Fire-and-forget, run-to-completion. Triggered via the Upsun API; in Phase 3
-# the upsun_task adapter triggers it on each Paperclip heartbeat. Tasks reject
-# `dependencies`/`stack` (SPEC Q5), so the agent CLI is installed in the build hook.
 tasks:
-  upsun-agent:
-    source:
-      root: /task
-    type: "nodejs:26"
-    hooks:
-      build: |
-        set -eu
-        npm i -g @anthropic-ai/claude-code
-    run:
-      command: "node run.js"
-      timeout: 900  # common ceiling: task timeout == auth-proxy x-token-ttl cap (Phase 3)
-    mounts:
-      "/tmp":
-        source: "tmp"
-
   # Runner route: one Paperclip Runner turn per task run. Started by the Upsun task plugin
   # (paperclip/plugin). The Launcher claims its secrets from the relay, fetches the provider pack
   # from the app, opens the tunnel and starts paperclip-runnerd.

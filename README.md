@@ -16,29 +16,30 @@ This is a showcase project for the Upsun task container. The plan, progress log 
 ## Layout
 
 ```
-.upsun/config.yaml    Upsun config: paperclip app, runner-relay app, postgresql, runner and upsun-agent tasks
+.upsun/config.yaml    Upsun config: paperclip app, runner-relay app, postgresql, runner task
 paperclip/upstream/   Paperclip, pinned as a git submodule to a release tag, never edited
 paperclip/plugin/     our Upsun task plugin (bundled at build, installed from /app/plugin)
 runner-task/          the runner task: Launcher (secrets, provider pack, tunnel, runnerd) + tunnel shim
-relay/                runner-relay: WebSocket tunnel, one-time secret hand-off, Launcher status
-task/                 upsun-agent: the earlier adapter-route task, kept until that route is retired
-adapter/, scripts/    placeholders from the adapter route
+relay/                runner-relay: WebSocket tunnel, one-time secret hand-off, Launcher status, state mirror
 ```
 
 ## Status
 
-The plugin, the runner task and the relay are deployed. Paperclip reaches the runner in a task through the relay, and Claude Code starts there. A full agent run still needs the setup steps in the Paperclip UI below. See `../JOURNAL.md` for the current state.
+Agents run end to end: a Paperclip heartbeat starts a `runner` task, the agent does its work through Paperclip, and the run shows in Paperclip with its usage. See `../JOURNAL.md` for the current state.
 
 - Paperclip pinned to release **v2026.1117.0**.
 - Runtimes: Node.js 26 for the apps and tasks, PostgreSQL 18.
 - The app build needs at least 4 GB of build memory (tsc plus a Rust compile of the Paperclip runner).
 - The app and the runner task run on the BALANCED container profile (about 0.5 GB used at idle by the app).
 
-## Setup in the Paperclip UI (once per environment)
+## Setup in Paperclip (once per environment)
 
-1. Install the plugin from the local path `/app/plugin`.
-2. Add an Anthropic AI connection. Paperclip holds the key and hands it to each run.
-3. Create an environment with the driver "Upsun task container".
-4. Create an agent on that environment (Paperclip Runner, Claude through ACPX), then wake it.
+Some steps have no UI yet, so they go through Paperclip's API as an instance admin (for example from the browser console while logged in).
+
+1. Install the plugin: `POST /api/plugins/install` with `{"packageName": "/app/plugin", "isLocalPath": true}`. The UI dialog only installs npm packages.
+2. Turn on Settings > Experimental > Environments.
+3. Create the environment: `POST /api/companies/<companyId>/environments` with `{"name": "Upsun task container", "driver": "plugin", "config": {"pluginKey": "upsun.task-environment", "driverKey": "upsun-task", "driverConfig": {"taskName": "runner"}}}`. The UI form doesn't list plugin task drivers.
+4. Add an Anthropic connection in Connectors (API key mode). Paperclip holds the key and hands it to each run.
+5. Create the agent in the UI (Claude Code, environment "Upsun task container"), but don't use "Run test" or "Finish setup": on Upsun the UI's long test request gets re-sent and each re-send starts a task (see `../JOURNAL.md`). Finish with `POST /api/companies/<companyId>/agent-hires` using the draft's settings, then Paperclip verifies the agent on the server.
 
 The relay needs one sensitive environment variable, `env:RUNNER_RELAY_ADMIN_SECRET` (random, runtime only, not inheritable).
