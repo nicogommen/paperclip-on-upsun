@@ -74,13 +74,16 @@ applications:
         test -f server/dist-runtime/index.mjs
         # Provider pack for the runner task (runnerd + node + ACPX/Claude tooling), built the way
         # upstream's Dockerfile builds its remote pack. Served to the task from /_upsun-runner/.
+        # Built in /tmp (the pack builder renames from /tmp, a different device from /app), then
+        # only the archive, its receipt, the manifest and the runner binary are copied into the app.
         mkdir -p "$APP/runner-pack"
-        PAPERCLIP_RUNNER_SOURCE_REVISION=$UPSTREAM_COMMIT node packages/paperclip-runner/scripts/build-provider-pack.mjs "$APP/runner-pack/provider-pack"
-        node scripts/create-provider-pack-archive.mjs "$APP/runner-pack/provider-pack"
-        test -x "$APP/runner-pack/provider-pack/dist/bin/paperclip-runnerd"
-        cp "$APP/runner-pack/provider-pack/provider-pack.json" "$APP/runner-pack/provider-pack/dist/bin/paperclip-runnerd" "$APP/runner-pack/"
-        du -sh "$APP/runner-pack/provider-pack" "$APP/runner-pack/provider-pack.tar.zst"
-        rm -rf "$APP/runner-pack/provider-pack"
+        PAPERCLIP_RUNNER_SOURCE_REVISION=$UPSTREAM_COMMIT node packages/paperclip-runner/scripts/build-provider-pack.mjs /tmp/provider-pack
+        # Single tar+zstd archive with one SHA-256 (the script's CLI writes a layered format).
+        node -e 'import("./scripts/create-provider-pack-archive.mjs").then(m => m.createProviderPackArchive("/tmp/provider-pack")).then(r => console.log("pack archive", JSON.stringify(r)))'
+        test -x /tmp/provider-pack/dist/bin/paperclip-runnerd
+        du -sh /tmp/provider-pack /tmp/provider-pack.tar.zst
+        cp /tmp/provider-pack.tar.zst /tmp/provider-pack.archive.json /tmp/provider-pack/provider-pack.json /tmp/provider-pack/dist/bin/paperclip-runnerd "$APP/runner-pack/"
+        rm -rf /tmp/provider-pack /tmp/provider-pack.tar.zst
         rm packages/paperclip-runner/runner/target
         # Our plugin resolves the SDK and runner packages from the pinned upstream build.
         mkdir -p "$APP/plugin/node_modules/@paperclipai"
