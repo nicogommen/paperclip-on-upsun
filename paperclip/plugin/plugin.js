@@ -225,6 +225,10 @@ async function stop(params) {
   const t = taskState(params.taskId);
   t.stopRequested = true;
   if (!t.activityId) return;
+  // Core calls stop after every turn. When the Launcher has already exited, let the Upsun
+  // activity finish on its own (shown as succeeded) instead of cancelling it.
+  const before = await status(params).catch(() => null);
+  if (before?.executionStopped) return;
   const s = settings();
   await upsun("POST", `/projects/${s.projectId}/environments/${encodeURIComponent(s.environment)}/activities/${t.activityId}/cancel`)
     .catch(() => null); // already finished
