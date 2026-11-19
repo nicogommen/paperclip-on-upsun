@@ -65,9 +65,6 @@ function pipe(core, data, connId, queue) {
 
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
 
-// Experiment only: the net-probe task posts its IPs here so they can be read while it runs.
-let probeInfo = null;
-
 // --- Secret hand-off and Launcher status (internal relationship only) ---------------------
 // The plugin parks a task's secrets under a one-time fetch token. The task claims them once.
 // These endpoints refuse anything that came through the public router.
@@ -125,17 +122,6 @@ const server = http.createServer(async (req, res) => {
     if (viaRouter(req)) return json(res, 404, { error: "not found" });
     try { if ((await internalApi(req, res)) !== false) return; } catch (e) { return json(res, 400, { error: e.message }); }
     return json(res, 404, { error: "not found" });
-  }
-  if (req.url === "/probe-info" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => { body += c; if (body.length > 4096) req.destroy(); });
-    req.on("end", () => { try { probeInfo = { ...JSON.parse(body), at: new Date().toISOString() }; } catch {} res.end("ok"); });
-    return;
-  }
-  if (req.url === "/probe-info") {
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(probeInfo));
-    return;
   }
   if (req.headers.upgrade === undefined && /^\/(t|tunnel|data)\//.test(req.url)) {
     log("plain request on a websocket path (upgrade header missing)", req.method, req.url, req.headers["user-agent"]);

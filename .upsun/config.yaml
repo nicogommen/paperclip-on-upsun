@@ -1,8 +1,9 @@
 # Upsun config for paperclip-on-upsun.
-# Phases 0-2 live: Paperclip authenticated+public (route 200), postgres 18, and the
-# upsun-agent task (below) runs the agent CLI to completion. Phase 3 (the upsun_task
-# adapter + the app's authorizations: block) is designed, not built.
-# Authoritative handoff + full rationale: ../JOURNAL.md ("CURRENT STATE" section), ../REFERENCE.md.
+# paperclip: unmodified Paperclip (submodule) + our Upsun task plugin. Each agent run starts the
+# `runner` task, which runs Paperclip's own Runner. runner-relay connects Paperclip to the runner,
+# since a task accepts no inbound connections. postgresql: Paperclip's database.
+# upsun-agent: the earlier adapter-route task, kept until that route is retired.
+# Rationale and history: ../JOURNAL.md, ../PLAN.md.
 
 applications:
   paperclip:
@@ -181,7 +182,7 @@ applications:
       #   BETTER_AUTH_SECRET, PAPERCLIP_SECRETS_MASTER_KEY.
       # Agent API keys (ANTHROPIC/OPENAI) belong on the Phase 2 task, not here (PLAN §5.1).
 
-  # Runner-route experiment: WebSocket tunnel so Paperclip can reach a runner inside a task
+  # WebSocket tunnel so Paperclip can reach a runner inside a task
   # (tasks accept no inbound connections). See relay/server.mjs.
   runner-relay:
     source:
@@ -224,6 +225,8 @@ tasks:
     source:
       root: /runner-task
     type: "nodejs:26"
+    # Claude Code + runnerd need memory more than CPU: BALANCED gives 1088 MB at 0.5 CPU.
+    container_profile: BALANCED
     hooks:
       build: |
         set -eu
@@ -238,23 +241,6 @@ tasks:
       "/tmp":
         source: "tmp"
 
-  # Runner-route experiment (branch runner-route): throwaway task that checks whether a
-  # runner in a task can be reached directly, and runs the relay shim with an echo server.
-  net-probe:
-    source:
-      root: /probe
-    type: "nodejs:26"
-    hooks:
-      build: |
-        set -eu
-        npm install --omit=dev --no-audit --no-fund
-    relationships:
-      pcapp: "paperclip:http"
-      relay: "runner-relay:http"
-    run:
-      command: "node probe.mjs"
-      timeout: 600
-
 services:
   postgresql:
     type: "postgresql:18"
@@ -264,7 +250,7 @@ routes:
     type: upstream
     upstream: "paperclip:http"
     primary: true
-  # Runner-route experiment: Paperclip dials wss://relay.{default}/t/<tunnel>/... and the
+  # Paperclip dials wss://relay.{default}/t/<tunnel>/... and the
   # task dials out to the same host. Core requires wss, which the route provides.
   "https://relay.{default}/":
     type: upstream
