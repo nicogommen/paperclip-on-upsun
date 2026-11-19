@@ -94,10 +94,9 @@ applications:
         cp /tmp/provider-pack.tar.zst /tmp/provider-pack.archive.json /tmp/provider-pack/provider-pack.json packages/paperclip-runner/dist/bin/paperclip-runnerd "$APP/runner-pack/"
         rm -rf /tmp/provider-pack /tmp/provider-pack.tar.zst
         rm packages/paperclip-runner/runner/target
-        # Our plugin resolves the SDK and runner packages from the pinned upstream build.
-        mkdir -p "$APP/plugin/node_modules/@paperclipai"
-        ln -sfn ../../../upstream/packages/plugins/sdk "$APP/plugin/node_modules/@paperclipai/plugin-sdk"
-        ln -sfn ../../../upstream/packages/paperclip-runner "$APP/plugin/node_modules/@paperclipai/paperclip-runner"
+        # Our plugin resolves packages exactly like the server: its node_modules is the server's
+        # (which has @paperclipai/plugin-sdk, @paperclipai/paperclip-runner, zod, ws, ...).
+        ln -sfn ../upstream/server/node_modules "$APP/plugin/node_modules"
         # Paperclip's packages import @paperclipai/shared as TypeScript source, so the plugin is
         # bundled the way upstream bundles its server (bundleRuntime: @paperclipai/* inlined,
         # third-party deps external by absolute path). dist/worker = process entry,
