@@ -206,7 +206,9 @@ async function status(params) {
     upsun("GET", `/projects/${s.projectId}/environments/${encodeURIComponent(s.environment)}/activities/${t.activityId}`),
     relay("GET", `/admin/status/${t.tunnelId}`).catch(() => null),
   ]);
-  const stopped = TERMINAL.has(activity.state);
+  // Stopped once Upsun ends the task, or once the Launcher reports that runnerd has exited
+  // (it reports only after runnerd is gone). Cancelling an activity takes a few seconds.
+  const stopped = TERMINAL.has(activity.state) || launcher?.phase === "exited";
   let phase = "preparing";
   if (launcher?.phase === "running") phase = "running";
   if (launcher?.phase === "exited") phase = launcher.exitCode === 0 ? "completed" : "failed";
@@ -226,6 +228,14 @@ async function stop(params) {
   const s = settings();
   await upsun("POST", `/projects/${s.projectId}/environments/${encodeURIComponent(s.environment)}/activities/${t.activityId}/cancel`)
     .catch(() => null); // already finished
+  // Core checks status right after stop and keeps the lease when termination is unconfirmed,
+  // so wait (bounded) until the cancellation has actually taken effect.
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const st = await status(params).catch(() => null);
+    if (st?.executionStopped) return;
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
 }
 
 const plugin = definePlugin({

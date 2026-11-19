@@ -130,21 +130,6 @@ async function dumpDiagnostics() {
   await walk("/tmp/agent/acpx");
 }
 
-// Can the Claude binary start at all in this container (memory)?
-async function claudeSelfTest(packRoot) {
-  const bin = join(packRoot, "node_modules/.bin/claude");
-  const started = Date.now();
-  await new Promise((resolve) => {
-    const child = spawn(bin, ["--version"], { env: { PATH: process.env.PATH, HOME: "/tmp/agent-home" }, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    child.stdout.on("data", (d) => { out += d; });
-    child.stderr.on("data", (d) => { out += d; });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
-    child.on("close", (code, signal) => { clearTimeout(timer); log(`claude --version -> code=${code} signal=${signal} in ${Date.now() - started}ms: ${out.trim().slice(0, 300)}`); resolve(); });
-    child.on("error", (e) => { clearTimeout(timer); log(`claude --version spawn error: ${e.message}`); resolve(); });
-  });
-}
-
 async function waitForPort(deadlineMs) {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -230,16 +215,18 @@ async function main() {
     log("runnerd listening");
     await report("running");
   } catch (e) {
+    // Stop runnerd before reporting: "exited" tells the plugin that nothing is running anymore.
+    try { handle.child.kill("SIGKILL"); } catch {}
+    await handle.completion.catch(() => null);
     await report("exited", { exitCode: 1, detail: e.message });
     throw e;
   }
   const result = await handle.completion;
   log("runnerd exited", JSON.stringify({ code: result.code, signal: result.signal }));
   await dumpDiagnostics();
-  await claudeSelfTest(host.pack);
   if (result.stderr) log("runnerd stderr tail:", String(result.stderr).slice(-2000));
-  await report("exited", { exitCode: result.code ?? 1, ...(result.code ? { detail: String(result.stderr ?? "").slice(-1500) } : {}) });
   shim.stop();
+  await report("exited", { exitCode: result.code ?? 1, ...(result.code ? { detail: String(result.stderr ?? "").slice(-1500) } : {}) });
   process.exit(result.code ?? 1);
 }
 
