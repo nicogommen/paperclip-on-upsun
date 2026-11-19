@@ -73,6 +73,17 @@ async function fetchPack(expectedSha, target) {
   log(`pack extracted in ${Date.now() - started}ms total`);
 }
 
+async function fetchRunner(expectedDigest, target) {
+  const res = await fetch(`${appHttp}/_upsun-runner/paperclip-runnerd`);
+  if (!res.ok) throw new Error(`runnerd download failed: ${res.status}`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  if (digest !== expectedDigest) throw new Error(`runnerd digest mismatch: ${digest}`);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, bytes, { mode: 0o755 });
+  log(`runnerd ${bytes.length} bytes, digest ok`);
+}
+
 async function writeBundles(bundles) {
   for (const bundle of bundles) {
     for (const file of bundle.files) {
@@ -106,6 +117,8 @@ async function main() {
   await fetchPack(payload.pack.sha256, host.pack);
   const manifest = JSON.parse(await readFile(join(host.pack, "provider-pack.json"), "utf8"));
   if (manifest.digest !== payload.pack.digest) throw new Error("provider pack identity changed");
+  const runnerBinaryPath = "/tmp/runner-bin/paperclip-runnerd";
+  await fetchRunner(payload.launch.runnerDigest, runnerBinaryPath);
   for (const dir of [host.root, host.cwd, host.context, "/tmp/agent-home", "/tmp/runner-state"]) await mkdir(dir, { recursive: true });
   await writeBundles(payload.bundles);
 
@@ -126,7 +139,7 @@ async function main() {
     ...(launch.maxLifetimeMs !== undefined ? { maxLifetimeMs: launch.maxLifetimeMs } : {}),
     ...(launch.reconnectGraceMs !== undefined ? { reconnectGraceMs: launch.reconnectGraceMs } : {}),
     lifecyclePolicy: launch.lifecyclePolicy,
-    runnerBinaryPath: join(host.pack, "dist/bin/paperclip-runnerd"),
+    runnerBinaryPath,
     runnerVersion: launch.runnerVersion,
     runnerDigest: launch.runnerDigest,
     ...(acpx ? { acpxLaunchProfile: {

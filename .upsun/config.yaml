@@ -78,11 +78,20 @@ applications:
         # only the archive, its receipt, the manifest and the runner binary are copied into the app.
         mkdir -p "$APP/runner-pack"
         PAPERCLIP_RUNNER_SOURCE_REVISION=$UPSTREAM_COMMIT node packages/paperclip-runner/scripts/build-provider-pack.mjs /tmp/provider-pack
+        # The full pack is ~1 GB compressed (every provider). Keep what Claude through ACPX needs:
+        # drop the candidate-provider assets and the other providers' native CLIs.
+        du -sh /tmp/provider-pack
+        (cd /tmp/provider-pack && du -s provider-assets/* node_modules/.pnpm/* 2>/dev/null | sort -rn | head -25 | sed 's/^/pack size: /')
+        rm -rf /tmp/provider-pack/provider-assets
+        for pkg in /tmp/provider-pack/node_modules/.pnpm/@openai+codex* /tmp/provider-pack/node_modules/.pnpm/opencode-* /tmp/provider-pack/node_modules/.pnpm/@github+copilot* /tmp/provider-pack/node_modules/.pnpm/@cursor* ; do
+          [ -e "$pkg" ] && echo "pack prune: $(basename "$pkg")" && rm -rf "$pkg"
+        done
+        du -sh /tmp/provider-pack
         # Single tar+zstd archive with one SHA-256 (the script's CLI writes a layered format).
         node -e 'import("./scripts/create-provider-pack-archive.mjs").then(m => m.createProviderPackArchive("/tmp/provider-pack")).then(r => console.log("pack archive", JSON.stringify(r)))'
-        test -x /tmp/provider-pack/dist/bin/paperclip-runnerd
-        du -sh /tmp/provider-pack /tmp/provider-pack.tar.zst
-        cp /tmp/provider-pack.tar.zst /tmp/provider-pack.archive.json /tmp/provider-pack/provider-pack.json /tmp/provider-pack/dist/bin/paperclip-runnerd "$APP/runner-pack/"
+        # runnerd is not inside the pack: ship the binary the runner build staged.
+        test -x packages/paperclip-runner/dist/bin/paperclip-runnerd
+        cp /tmp/provider-pack.tar.zst /tmp/provider-pack.archive.json /tmp/provider-pack/provider-pack.json packages/paperclip-runner/dist/bin/paperclip-runnerd "$APP/runner-pack/"
         rm -rf /tmp/provider-pack /tmp/provider-pack.tar.zst
         rm packages/paperclip-runner/runner/target
         # Our plugin resolves the SDK and runner packages from the pinned upstream build.
@@ -118,7 +127,7 @@ applications:
           passthru: false
           allow: false
           rules:
-            '\.(zst|json)$':
+            '(\.zst|\.json|/paperclip-runnerd)$':
               allow: true
 
     # Persistent state across redeploys. Mount keys are relative to the app root, so this lives
