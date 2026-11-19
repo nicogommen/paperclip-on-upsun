@@ -8,7 +8,7 @@
 //  4. Reports its phase to the relay (the plugin's `status` reads it) and exits with runnerd.
 
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
@@ -72,13 +72,16 @@ async function fetchPack(expectedSha, target) {
 }
 
 // The Claude SDK native binary is installed in this task's image (package.json pins the same
-// version as the pack) and linked back where the pack's dependency graph expects it.
+// version as the pack) and copied back where the pack's dependency graph expects it. A copy,
+// not a symlink: the ACPX sidecar refuses packages that resolve outside the pack root.
 async function linkClaudeSdk(packRoot) {
+  const started = Date.now();
   const version = "0.3.286";
   const source = join(dirname(fileURLToPath(import.meta.url)), "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64");
-  const parent = join(packRoot, `node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@${version}/node_modules/@anthropic-ai`);
-  await mkdir(parent, { recursive: true });
-  await symlink(source, join(parent, "claude-agent-sdk-linux-x64"));
+  const target = join(packRoot, `node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-linux-x64@${version}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64`);
+  await mkdir(dirname(target), { recursive: true });
+  await cp(source, target, { recursive: true, preserveTimestamps: true });
+  log(`claude sdk copied in ${Date.now() - started}ms`);
 }
 
 async function fetchRunner(expectedDigest, target) {
