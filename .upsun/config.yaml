@@ -197,6 +197,10 @@ applications:
           passthru: true
           request_buffering:
             enabled: false
+        # Diagnostic: same location settings as the paperclip app (default request buffering),
+        # used to reproduce long-request behavior through the router. See relay/server.mjs.
+        "/slow":
+          passthru: true
 
 # Phase 2: the ephemeral task that runs one agent heartbeat (modeled on the playground's
 # coding-agent). Fire-and-forget, run-to-completion. Triggered via the Upsun API; in Phase 3
