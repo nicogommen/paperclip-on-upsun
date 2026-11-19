@@ -9,17 +9,15 @@
 import { randomUUID } from "node:crypto";
 import plugin from "../dist/hooks/server.mjs";
 
-const UPSTREAM = "/app/upstream";
+
 const model = process.argv[2] || "claude-sonnet-5-5";
 const log = (...a) => console.log(new Date().toISOString(), "[harness]", ...a);
 
 if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set in this container");
 
-const { bundleRuntime } = await import(`${UPSTREAM}/server/scripts/bundle-runtime.mjs`);
-const outdir = `/tmp/probe-harness-${process.pid}`;
-await bundleRuntime({ entry: `${UPSTREAM}/server/dist/services/native-runtime/plugin-runner-probe.js`, outdir });
-const { probePluginRunnerEnvironment } = await import(`${outdir}/server.mjs`);
-log("probe bundled");
+// Bundled at build time (see .upsun/config.yaml).
+const { probePluginRunnerEnvironment } = await import("../dist/probe/server.mjs");
+log("probe loaded");
 
 const hooks = plugin.definition;
 const lease = await hooks.onEnvironmentAcquireLease({ driverKey: "upsun-task", companyId: "harness", environmentId: "harness", config: {}, runId: randomUUID() });
