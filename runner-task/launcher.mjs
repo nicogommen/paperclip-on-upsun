@@ -8,7 +8,7 @@
 //  4. Reports its phase to the relay (the plugin's `status` reads it) and exits with runnerd.
 
 import { createHash } from "node:crypto";
-import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
@@ -106,6 +106,27 @@ async function writeBundles(bundles) {
   }
 }
 
+// Container limits and OOM kills, plus runnerd's own diagnostics (credentials redacted).
+async function dumpDiagnostics() {
+  for (const f of ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/cpu.max"]) {
+    try { log(`${f}: ${(await readFile(f, "utf8")).trim().replace(/\n/g, " | ")}`); } catch {}
+  }
+  const walk = async (dir) => {
+    let names = [];
+    try { names = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of names) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { await walk(p); continue; }
+      try {
+        const text = (await readFile(p, "utf8")).replace(/(sk-ant-[A-Za-z0-9_-]+|"?(api[_-]?key|token|ticket)"?\s*[:=]\s*"?)[^\s",}]+/gi, "$1[redacted]");
+        log(`diag ${p} (${text.length} bytes) tail:\n${text.slice(-3000)}`);
+      } catch {}
+    }
+  };
+  await walk("/tmp/runner-diagnostics");
+  await walk("/tmp/runner-state/diagnostics");
+}
+
 async function waitForPort(deadlineMs) {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -196,6 +217,7 @@ async function main() {
   }
   const result = await handle.completion;
   log("runnerd exited", JSON.stringify({ code: result.code, signal: result.signal }));
+  await dumpDiagnostics();
   if (result.stderr) log("runnerd stderr tail:", String(result.stderr).slice(-2000));
   await report("exited", { exitCode: result.code ?? 1, ...(result.code ? { detail: String(result.stderr ?? "").slice(-1500) } : {}) });
   shim.stop();
